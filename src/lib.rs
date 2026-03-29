@@ -1,7 +1,8 @@
 use futures::StreamExt;
 use genai::adapter::AdapterKind;
 use genai::chat::{
-	ChatMessage, ChatOptions, ChatRequest, ChatRole, ChatStream, ChatStreamEvent, StreamEnd, ToolCall, Usage,
+	ChatMessage, ChatOptions, ChatRequest, ChatRole, ChatStream, ChatStreamEvent, StreamEnd, Tool, ToolCall,
+	ToolResponse, Usage,
 };
 use genai::resolver::{AuthData, AuthResolver, Endpoint, ServiceTargetResolver};
 use pyo3::exceptions::{PyRuntimeError, PyStopAsyncIteration, PyValueError};
@@ -22,14 +23,31 @@ struct PyChatMessage {
 	role: String,
 	#[pyo3(get, set)]
 	content: String,
+	/// For assistant messages that contain tool calls (serialized as JSON array of tool calls)
+	#[pyo3(get, set)]
+	tool_calls: Option<Vec<PyToolCall>>,
+	/// For tool response messages
+	#[pyo3(get, set)]
+	tool_response_call_id: Option<String>,
 }
 
 #[pymethods]
 impl PyChatMessage {
 	#[new]
-	fn new(role: String, content: String) -> PyResult<Self> {
+	#[pyo3(signature = (role, content, tool_calls = None, tool_response_call_id = None))]
+	fn new(
+		role: String,
+		content: String,
+		tool_calls: Option<Vec<PyToolCall>>,
+		tool_response_call_id: Option<String>,
+	) -> PyResult<Self> {
 		validate_role(&role)?;
-		Ok(Self { role, content })
+		Ok(Self {
+			role,
+			content,
+			tool_calls,
+			tool_response_call_id,
+		})
 	}
 }
 
@@ -40,14 +58,16 @@ struct PyChatRequest {
 	system: Option<String>,
 	#[pyo3(get, set)]
 	messages: Vec<PyChatMessage>,
+	#[pyo3(get, set)]
+	tools: Option<Vec<PyTool>>,
 }
 
 #[pymethods]
 impl PyChatRequest {
 	#[new]
-	#[pyo3(signature = (messages, system = None))]
-	fn new(messages: Vec<PyChatMessage>, system: Option<String>) -> Self {
-		Self { system, messages }
+	#[pyo3(signature = (messages, system = None, tools = None))]
+	fn new(messages: Vec<PyChatMessage>, system: Option<String>, tools: Option<Vec<PyTool>>) -> Self {
+		Self { system, messages, tools }
 	}
 
 	fn add_message(&mut self, message: PyChatMessage) {
@@ -60,6 +80,31 @@ impl PyChatRequest {
 
 	fn messages(&self) -> Vec<PyChatMessage> {
 		self.messages.clone()
+	}
+}
+
+#[pyclass(name = "Tool", from_py_object)]
+#[derive(Clone)]
+struct PyTool {
+	#[pyo3(get, set)]
+	name: String,
+	#[pyo3(get, set)]
+	description: Option<String>,
+	/// JSON Schema string for parameters
+	#[pyo3(get, set)]
+	schema_json: Option<String>,
+}
+
+#[pymethods]
+impl PyTool {
+	#[new]
+	#[pyo3(signature = (name, description = None, schema_json = None))]
+	fn new(name: String, description: Option<String>, schema_json: Option<String>) -> Self {
+		Self {
+			name,
+			description,
+			schema_json,
+		}
 	}
 }
 
@@ -146,6 +191,25 @@ struct PyToolCall {
 	fn_arguments_json: String,
 	#[pyo3(get, set)]
 	thought_signatures: Option<Vec<String>>,
+}
+
+#[pymethods]
+impl PyToolCall {
+	#[new]
+	#[pyo3(signature = (call_id, fn_name, fn_arguments_json, thought_signatures = None))]
+	fn new(
+		call_id: String,
+		fn_name: String,
+		fn_arguments_json: String,
+		thought_signatures: Option<Vec<String>>,
+	) -> Self {
+		Self {
+			call_id,
+			fn_name,
+			fn_arguments_json,
+			thought_signatures,
+		}
+	}
 }
 
 #[pyclass(name = "Usage", from_py_object)]
@@ -242,8 +306,8 @@ impl PyClient {
 		request: PyChatRequest,
 		options: Option<PyChatOptions>,
 	) -> PyResult<Py<PyChatResponse>> {
-		let chat_req = to_rust_chat_request(request)?;
-		let chat_options = options.map(to_rust_chat_options);
+		let chat_req = ChatRequest::try_from(request)?;
+		let chat_options = options.map(ChatOptions::from);
 
 		let runtime = Builder::new_multi_thread()
 			.enable_all()
@@ -265,8 +329,8 @@ impl PyClient {
 		request: PyChatRequest,
 		options: Option<PyChatOptions>,
 	) -> PyResult<Bound<'py, PyAny>> {
-		let chat_req = to_rust_chat_request(request)?;
-		let chat_options = options.map(to_rust_chat_options);
+		let chat_req = ChatRequest::try_from(request)?;
+		let chat_options = options.map(ChatOptions::from);
 		let client = self.inner.clone();
 
 		pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -287,8 +351,8 @@ impl PyClient {
 		request: PyChatRequest,
 		options: Option<PyChatOptions>,
 	) -> PyResult<Bound<'py, PyAny>> {
-		let chat_req = to_rust_chat_request(request)?;
-		let chat_options = options.map(to_rust_chat_options);
+		let chat_req = ChatRequest::try_from(request)?;
+		let chat_options = options.map(ChatOptions::from);
 		let client = self.inner.clone();
 
 		pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -355,6 +419,7 @@ fn _genai_pyo3(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
 	module.add_class::<PyChatMessage>()?;
 	module.add_class::<PyChatRequest>()?;
 	module.add_class::<PyChatOptions>()?;
+	module.add_class::<PyTool>()?;
 	module.add_class::<PyToolCall>()?;
 	module.add_class::<PyUsage>()?;
 	module.add_class::<PyChatResponse>()?;
@@ -364,16 +429,7 @@ fn _genai_pyo3(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
 	Ok(())
 }
 
-fn validate_role(role: &str) -> PyResult<()> {
-	match role {
-		"system" | "user" | "assistant" | "tool" => Ok(()),
-		_ => Err(PyValueError::new_err(format!(
-			"invalid chat role '{role}'. expected one of: system, user, assistant, tool"
-		))),
-	}
-}
-
-fn to_rust_role(role: &str) -> PyResult<ChatRole> {
+fn parse_chat_role(role: &str) -> PyResult<ChatRole> {
 	match role {
 		"system" => Ok(ChatRole::System),
 		"user" => Ok(ChatRole::User),
@@ -385,46 +441,109 @@ fn to_rust_role(role: &str) -> PyResult<ChatRole> {
 	}
 }
 
-fn to_rust_chat_request(request: PyChatRequest) -> PyResult<ChatRequest> {
-	let mut messages: Vec<ChatMessage> = Vec::with_capacity(request.messages.len());
-	for message in request.messages {
-		let role = to_rust_role(&message.role)?;
-		messages.push(ChatMessage {
-			role,
-			content: message.content.into(),
-			options: None,
-		});
-	}
-
-	Ok(ChatRequest {
-		system: request.system,
-		messages,
-		tools: None,
-		previous_response_id: None,
-		store: None,
-	})
+fn validate_role(role: &str) -> PyResult<()> {
+	parse_chat_role(role).map(|_| ())
 }
 
-fn to_rust_chat_options(options: PyChatOptions) -> ChatOptions {
-	ChatOptions {
-		temperature: options.temperature,
-		max_tokens: options.max_tokens,
-		top_p: options.top_p,
-		stop_sequences: options.stop_sequences,
-		capture_usage: options.capture_usage,
-		capture_content: options.capture_content,
-		capture_reasoning_content: options.capture_reasoning_content,
-		capture_tool_calls: options.capture_tool_calls,
-		capture_raw_body: options.capture_raw_body,
-		response_format: None,
-		normalize_reasoning_content: options.normalize_reasoning_content,
-		reasoning_effort: None,
-		verbosity: None,
-		seed: options.seed,
-		service_tier: None,
-		extra_headers: None,
-		cache_control: None,
-		prompt_cache_key: None,
+impl TryFrom<PyChatMessage> for ChatMessage {
+	type Error = PyErr;
+
+	fn try_from(message: PyChatMessage) -> Result<Self, Self::Error> {
+		let role = parse_chat_role(&message.role)?;
+
+		match role {
+			ChatRole::Assistant if message.tool_calls.is_some() => {
+				// Assistant message with tool calls
+				let py_calls = message.tool_calls.unwrap();
+				let calls: Vec<ToolCall> = py_calls
+					.into_iter()
+					.map(|tc| {
+						let args: serde_json::Value =
+							serde_json::from_str(&tc.fn_arguments_json).unwrap_or(serde_json::Value::Null);
+						ToolCall {
+							call_id: tc.call_id,
+							fn_name: tc.fn_name,
+							fn_arguments: args,
+							thought_signatures: tc.thought_signatures,
+						}
+					})
+					.collect();
+				Ok(ChatMessage::from(calls))
+			}
+			ChatRole::Tool => {
+				// Tool response message
+				let call_id = message
+					.tool_response_call_id
+					.unwrap_or_default();
+				let response = ToolResponse::new(call_id, message.content);
+				Ok(ChatMessage::from(response))
+			}
+			_ => {
+				// Regular text message (system, user, assistant without tool calls)
+				Ok(ChatMessage {
+					role,
+					content: message.content.into(),
+					options: None,
+				})
+			}
+		}
+	}
+}
+
+impl TryFrom<PyChatRequest> for ChatRequest {
+	type Error = PyErr;
+
+	fn try_from(request: PyChatRequest) -> Result<Self, Self::Error> {
+		let messages = request
+			.messages
+			.into_iter()
+			.map(ChatMessage::try_from)
+			.collect::<PyResult<Vec<_>>>()?;
+
+		let tools = request.tools.map(|py_tools| {
+			py_tools
+				.into_iter()
+				.map(|t| {
+					let mut tool = Tool::new(t.name);
+					if let Some(desc) = t.description {
+						tool = tool.with_description(desc);
+					}
+					if let Some(schema_str) = t.schema_json {
+						if let Ok(schema) = serde_json::from_str::<serde_json::Value>(&schema_str) {
+							tool = tool.with_schema(schema);
+						}
+					}
+					tool
+				})
+				.collect()
+		});
+
+		Ok(Self {
+			system: request.system,
+			messages,
+			tools,
+			previous_response_id: None,
+			store: None,
+		})
+	}
+}
+
+impl From<PyChatOptions> for ChatOptions {
+	fn from(options: PyChatOptions) -> Self {
+		Self {
+			temperature: options.temperature,
+			max_tokens: options.max_tokens,
+			top_p: options.top_p,
+			stop_sequences: options.stop_sequences,
+			capture_usage: options.capture_usage,
+			capture_content: options.capture_content,
+			capture_reasoning_content: options.capture_reasoning_content,
+			capture_tool_calls: options.capture_tool_calls,
+			capture_raw_body: options.capture_raw_body,
+			normalize_reasoning_content: options.normalize_reasoning_content,
+			seed: options.seed,
+			..Default::default()
+		}
 	}
 }
 
