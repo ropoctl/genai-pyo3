@@ -203,6 +203,16 @@ class ChatResponse:
     method names and semantics.
     """
 
+    def __new__(
+        cls,
+        content: list[ContentPartDict] | None = ...,
+        reasoning_content: str | None = ...,
+        model_adapter_kind: str | None = ...,
+        model_name: str | None = ...,
+        provider_model_adapter_kind: str | None = ...,
+        provider_model_name: str | None = ...,
+        usage: Usage | None = ...,
+    ) -> ChatResponse: ...
     @property
     def content(self) -> list[ContentPartDict]: ...
     reasoning_content: str | None

@@ -373,6 +373,47 @@ struct PyChatResponse {
 
 #[pymethods]
 impl PyChatResponse {
+    /// Build a `ChatResponse` from Python — primarily for test fixtures.
+    ///
+    /// ``content`` accepts the same lowercase-keyed content-part dict form
+    /// the client emits (``[{"text": "..."}, {"tool_call": {...}}, ...]``)
+    /// and runs through ``pythonize → serde_json::Value → MessageContent``.
+    /// Normal response objects come back from ``client.achat`` /
+    /// ``client.achat_via_stream``; production code should not need this.
+    #[new]
+    #[pyo3(signature = (
+        content = None,
+        reasoning_content = None,
+        model_adapter_kind = None,
+        model_name = None,
+        provider_model_adapter_kind = None,
+        provider_model_name = None,
+        usage = None,
+    ))]
+    fn new(
+        content: Option<Bound<'_, PyAny>>,
+        reasoning_content: Option<String>,
+        model_adapter_kind: Option<String>,
+        model_name: Option<String>,
+        provider_model_adapter_kind: Option<String>,
+        provider_model_name: Option<String>,
+        usage: Option<PyUsage>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner_content: coerce_message_content(content)?,
+            reasoning_content,
+            model_adapter_kind: model_adapter_kind.unwrap_or_default(),
+            model_name: model_name.unwrap_or_default(),
+            provider_model_adapter_kind: provider_model_adapter_kind.unwrap_or_default(),
+            provider_model_name: provider_model_name.unwrap_or_default(),
+            usage: usage.unwrap_or(PyUsage {
+                prompt_tokens: None,
+                completion_tokens: None,
+                total_tokens: None,
+            }),
+        })
+    }
+
     /// Full content as a list of lowercase-keyed content-part dicts
     /// (``[{"text": "..."}, {"tool_call": {...}}, ...]``).
     #[getter]
@@ -983,28 +1024,59 @@ fn normalize_chat_request_value(value: &mut serde_json::Value) -> PyResult<()> {
             }
         }
         let Some(parts) = obj.get_mut("content").and_then(|v| v.as_array_mut()) else { continue };
-        for (part_idx, part) in parts.iter_mut().enumerate() {
-            let Some(part_obj) = part.as_object_mut() else { continue };
-            if part_obj.len() != 1 {
-                return Err(PyValueError::new_err(format!(
-                    "messages[{msg_idx}].content[{part_idx}]: expected a single-key dict \
-                     ({:?}), got {} keys",
-                    CONTENT_PART_KEYS_LOWER,
-                    part_obj.len()
-                )));
-            }
-            let lower_key = part_obj.keys().next().cloned().unwrap();
-            let inner = part_obj.remove(&lower_key).unwrap();
-            let title = title_case_content_part(&lower_key).ok_or_else(|| {
-                PyValueError::new_err(format!(
-                    "messages[{msg_idx}].content[{part_idx}]: expected one of {:?}, got {:?}",
-                    CONTENT_PART_KEYS_LOWER, lower_key
-                ))
-            })?;
-            part_obj.insert(title.into(), inner);
-        }
+        normalize_content_parts(parts, &format!("messages[{msg_idx}].content"))?;
     }
     Ok(())
+}
+
+/// Title-case the externally-tagged variant keys on a top-level content-part
+/// list (lowercase ``text`` → ``Text``, etc.) so serde can deserialize it
+/// into ``Vec<ContentPart>`` / ``MessageContent``. Errors mention the given
+/// path (``messages[N].content`` for request-side, ``content`` for the
+/// response-side constructor) so callers get a clear pointer on malformed
+/// input.
+fn normalize_content_parts(parts: &mut [serde_json::Value], path: &str) -> PyResult<()> {
+    for (part_idx, part) in parts.iter_mut().enumerate() {
+        let Some(part_obj) = part.as_object_mut() else { continue };
+        if part_obj.len() != 1 {
+            return Err(PyValueError::new_err(format!(
+                "{path}[{part_idx}]: expected a single-key dict ({:?}), got {} keys",
+                CONTENT_PART_KEYS_LOWER,
+                part_obj.len()
+            )));
+        }
+        let lower_key = part_obj.keys().next().cloned().unwrap();
+        let inner = part_obj.remove(&lower_key).unwrap();
+        let title = title_case_content_part(&lower_key).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "{path}[{part_idx}]: expected one of {:?}, got {:?}",
+                CONTENT_PART_KEYS_LOWER, lower_key
+            ))
+        })?;
+        part_obj.insert(title.into(), inner);
+    }
+    Ok(())
+}
+
+/// Depythonize a Python object (or None) into a ``MessageContent``. Accepts
+/// the same lowercase-keyed content-part dict form the client emits.
+fn coerce_message_content(obj: Option<Bound<'_, PyAny>>) -> PyResult<genai::chat::MessageContent> {
+    let Some(obj) = obj else { return Ok(genai::chat::MessageContent::default()) };
+    if obj.is_none() {
+        return Ok(genai::chat::MessageContent::default());
+    }
+    let mut value: serde_json::Value = depythonize(&obj).map_err(|err| {
+        PyValueError::new_err(format!(
+            "content must be a list of content-part dicts: {err}"
+        ))
+    })?;
+    let parts = value.as_array_mut().ok_or_else(|| {
+        PyValueError::new_err("content must be a list of content-part dicts")
+    })?;
+    normalize_content_parts(parts, "content")?;
+    serde_json::from_value(value).map_err(|err| {
+        PyValueError::new_err(format!("content list does not match schema: {err}"))
+    })
 }
 
 /// Accept an optional `PyChatOptions` pyclass or a JSON-compatible dict.
