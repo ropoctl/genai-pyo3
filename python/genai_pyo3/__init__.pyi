@@ -18,23 +18,21 @@ from typing import Any, Literal, NotRequired, TypedDict
 # TypedDict shapes (dict form accepted by Client.{chat,achat,astream_chat})
 # ---------------------------------------------------------------------------
 
-Role = Literal["System", "User", "Assistant", "Tool"]
+Role = Literal["system", "user", "assistant", "tool"]
 
 class TextPartDict(TypedDict):
-    """``{"Text": "hello"}`` — externally-tagged serde enum variant."""
+    """``{"text": "hello"}`` — lowercase alias for the ``Text`` variant."""
 
-    Text: str
+    text: str
 
 class BinaryPartDict(TypedDict):
-    """``{"Binary": {...}}`` — binary/image payload."""
-
-    Binary: Any
+    binary: Any
 
 class ToolCallPartDict(TypedDict):
-    ToolCall: Any
+    tool_call: Any
 
 class ToolResponsePartDict(TypedDict):
-    ToolResponse: Any
+    tool_response: Any
 
 ContentPartDict = (
     TextPartDict | BinaryPartDict | ToolCallPartDict | ToolResponsePartDict

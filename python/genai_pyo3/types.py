@@ -20,25 +20,31 @@ if False:  # TYPE_CHECKING
     # Only imported by stub-aware tools; keeps runtime import cycle out.
     from . import ChatOptions, ChatRequest
 
-Role = Literal["System", "User", "Assistant", "Tool"]
+Role = Literal["system", "user", "assistant", "tool"]
+"""Lowercase role names — isomorphic to genai's ``ChatRole`` variants.
+
+The Rust coercion layer title-cases these (``"user"`` → ``"User"``) before
+handing the value to serde, so callers get the Python-idiomatic spelling
+without fighting serde's default external tagging.
+"""
 
 
 class TextPartDict(TypedDict):
-    """Externally-tagged serde variant: ``{"Text": "hello"}``."""
+    """Single text segment — ``{"text": "hello"}``."""
 
-    Text: str
+    text: str
 
 
 class BinaryPartDict(TypedDict):
-    Binary: Any
+    binary: Any
 
 
 class ToolCallPartDict(TypedDict):
-    ToolCall: Any
+    tool_call: Any
 
 
 class ToolResponsePartDict(TypedDict):
-    ToolResponse: Any
+    tool_response: Any
 
 
 ContentPartDict = Union[

@@ -824,19 +824,77 @@ impl TryFrom<PyChatMessage> for ChatMessage {
 
 /// Accept either a `PyChatRequest` pyclass instance or any Python object that
 /// depythonizes into a `serde_json::Value` matching the rust-genai
-/// `ChatRequest` serde shape (dict / list / primitives).
+/// `ChatRequest` serde shape.
+///
+/// The shape is isomorphic to the native serde form; as an ergonomic
+/// affordance, callers may write the enum variant names in Python-idiomatic
+/// lowercase (`"user"`, `"text"`, `"tool_call"`, ...) and the coercion
+/// layer title-cases them back into the `ChatRole` / `ContentPart` variant
+/// names serde expects. Native title-case keys still pass through unchanged.
 fn coerce_chat_request(obj: Bound<'_, PyAny>) -> PyResult<ChatRequest> {
     if let Ok(typed) = obj.extract::<PyChatRequest>() {
         return ChatRequest::try_from(typed);
     }
-    let value: serde_json::Value = depythonize(&obj).map_err(|err| {
+    let mut value: serde_json::Value = depythonize(&obj).map_err(|err| {
         PyValueError::new_err(format!(
             "chat request must be a ChatRequest or a JSON-compatible dict: {err}"
         ))
     })?;
+    normalize_chat_request_value(&mut value);
     serde_json::from_value(value).map_err(|err| {
         PyValueError::new_err(format!("chat request dict does not match schema: {err}"))
     })
+}
+
+/// Map a lowercase enum alias to its title-cased serde variant name.
+/// Returns `None` when the input is already title-case or not a known alias
+/// — in either case, leave the value untouched.
+fn title_case_role(s: &str) -> Option<&'static str> {
+    match s {
+        "system" => Some("System"),
+        "user" => Some("User"),
+        "assistant" => Some("Assistant"),
+        "tool" => Some("Tool"),
+        _ => None,
+    }
+}
+
+fn title_case_content_part(s: &str) -> Option<&'static str> {
+    match s {
+        "text" => Some("Text"),
+        "binary" => Some("Binary"),
+        "tool_call" => Some("ToolCall"),
+        "tool_response" => Some("ToolResponse"),
+        "thought_signature" => Some("ThoughtSignature"),
+        "reasoning_content" => Some("ReasoningContent"),
+        _ => None,
+    }
+}
+
+fn normalize_chat_request_value(value: &mut serde_json::Value) {
+    let Some(messages) = value
+        .get_mut("messages")
+        .and_then(|v| v.as_array_mut())
+    else {
+        return;
+    };
+    for msg in messages {
+        let Some(obj) = msg.as_object_mut() else { continue };
+        if let Some(role) = obj.get_mut("role").and_then(|v| v.as_str()).map(str::to_owned) {
+            if let Some(title) = title_case_role(&role) {
+                obj.insert("role".to_string(), serde_json::Value::String(title.to_string()));
+            }
+        }
+        let Some(parts) = obj.get_mut("content").and_then(|v| v.as_array_mut()) else { continue };
+        for part in parts {
+            let Some(part_obj) = part.as_object_mut() else { continue };
+            let Some((lower_key, inner)) = part_obj.iter().next().map(|(k, v)| (k.clone(), v.clone())) else { continue };
+            if let Some(title) = title_case_content_part(&lower_key) {
+                part_obj.remove(&lower_key);
+                part_obj.insert(title.to_string(), inner);
+            }
+        }
+    }
 }
 
 /// Accept an optional `PyChatOptions` pyclass or a JSON-compatible dict.
