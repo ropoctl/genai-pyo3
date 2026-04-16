@@ -840,15 +840,22 @@ fn coerce_chat_request(obj: Bound<'_, PyAny>) -> PyResult<ChatRequest> {
             "chat request must be a ChatRequest or a JSON-compatible dict: {err}"
         ))
     })?;
-    normalize_chat_request_value(&mut value);
+    normalize_chat_request_value(&mut value)?;
     serde_json::from_value(value).map_err(|err| {
         PyValueError::new_err(format!("chat request dict does not match schema: {err}"))
     })
 }
 
-/// Map a lowercase enum alias to its title-cased serde variant name.
-/// Returns `None` when the input is already title-case or not a known alias
-/// — in either case, leave the value untouched.
+const ROLES_LOWER: [&str; 4] = ["system", "user", "assistant", "tool"];
+const CONTENT_PART_KEYS_LOWER: [&str; 6] = [
+    "text",
+    "binary",
+    "tool_call",
+    "tool_response",
+    "thought_signature",
+    "reasoning_content",
+];
+
 fn title_case_role(s: &str) -> Option<&'static str> {
     match s {
         "system" => Some("System"),
@@ -871,30 +878,53 @@ fn title_case_content_part(s: &str) -> Option<&'static str> {
     }
 }
 
-fn normalize_chat_request_value(value: &mut serde_json::Value) {
+/// Strictly require lowercase variant names and title-case them into the
+/// serde form. Any other spelling (including native title-case) is a
+/// ValueError — rust-genai's enum names are an implementation detail; the
+/// dict shape is documented lowercase-only.
+fn normalize_chat_request_value(value: &mut serde_json::Value) -> PyResult<()> {
     let Some(messages) = value
         .get_mut("messages")
         .and_then(|v| v.as_array_mut())
     else {
-        return;
+        return Ok(());
     };
-    for msg in messages {
+    for (msg_idx, msg) in messages.iter_mut().enumerate() {
         let Some(obj) = msg.as_object_mut() else { continue };
-        if let Some(role) = obj.get_mut("role").and_then(|v| v.as_str()).map(str::to_owned) {
-            if let Some(title) = title_case_role(&role) {
-                obj.insert("role".to_string(), serde_json::Value::String(title.to_string()));
+        if let Some(role_value) = obj.get("role") {
+            if let Some(role_str) = role_value.as_str() {
+                let title = title_case_role(role_str).ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "messages[{msg_idx}].role: expected one of {:?}, got {role_str:?}",
+                        ROLES_LOWER
+                    ))
+                })?;
+                obj.insert("role".to_string(), serde_json::Value::String(title.into()));
             }
         }
         let Some(parts) = obj.get_mut("content").and_then(|v| v.as_array_mut()) else { continue };
-        for part in parts {
+        for (part_idx, part) in parts.iter_mut().enumerate() {
             let Some(part_obj) = part.as_object_mut() else { continue };
-            let Some((lower_key, inner)) = part_obj.iter().next().map(|(k, v)| (k.clone(), v.clone())) else { continue };
-            if let Some(title) = title_case_content_part(&lower_key) {
-                part_obj.remove(&lower_key);
-                part_obj.insert(title.to_string(), inner);
+            if part_obj.len() != 1 {
+                return Err(PyValueError::new_err(format!(
+                    "messages[{msg_idx}].content[{part_idx}]: expected a single-key dict \
+                     ({:?}), got {} keys",
+                    CONTENT_PART_KEYS_LOWER,
+                    part_obj.len()
+                )));
             }
+            let lower_key = part_obj.keys().next().cloned().unwrap();
+            let inner = part_obj.remove(&lower_key).unwrap();
+            let title = title_case_content_part(&lower_key).ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "messages[{msg_idx}].content[{part_idx}]: expected one of {:?}, got {:?}",
+                    CONTENT_PART_KEYS_LOWER, lower_key
+                ))
+            })?;
+            part_obj.insert(title.into(), inner);
         }
     }
+    Ok(())
 }
 
 /// Accept an optional `PyChatOptions` pyclass or a JSON-compatible dict.
