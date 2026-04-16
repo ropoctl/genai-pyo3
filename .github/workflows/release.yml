@@ -1,0 +1,136 @@
+# Build and publish wheels for genai-pyo3.
+#
+# Triggers:
+#   - push of a `v*.*.*` tag: build the full matrix, publish to PyPI.
+#   - workflow_dispatch: build the full matrix, upload wheels as CI artifacts
+#     only (no PyPI publish). Use this to verify a release before tagging.
+#
+# PyPI auth: the `release` job uses trusted publishing (OIDC). Configure it
+# once at https://pypi.org/manage/project/genai-pyo3/settings/publishing/:
+#   owner = ropoctl
+#   repo = genai-pyo3
+#   workflow = release.yml
+#   environment = pypi
+# …and create a GitHub environment named `pypi` on this repo.
+
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # --- Linux: x86_64 + aarch64 via manylinux2014 ------------------------------
+  linux:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64, aarch64]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist --interpreter python${{ matrix.python-version }}
+          manylinux: "2014"
+          sccache: "true"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-${{ matrix.target }}-py${{ matrix.python-version }}
+          path: dist/
+
+  # --- macOS: universal2 covers x86_64 + arm64 in one wheel -------------------
+  macos:
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: universal2-apple-darwin
+          args: --release --out dist --interpreter python${{ matrix.python-version }}
+          sccache: "true"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-macos-py${{ matrix.python-version }}
+          path: dist/
+
+  # --- Windows: x64 -----------------------------------------------------------
+  windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          architecture: x64
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: x64
+          args: --release --out dist --interpreter python${{ matrix.python-version }}
+          sccache: "true"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-windows-py${{ matrix.python-version }}
+          path: dist/
+
+  # --- Source distribution (one per release) ----------------------------------
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/
+
+  # --- Publish: runs only on a v*.*.* tag -------------------------------------
+  release:
+    name: publish to PyPI
+    runs-on: ubuntu-latest
+    needs: [linux, macos, windows, sdist]
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment:
+      name: pypi
+      url: https://pypi.org/p/genai-pyo3
+    permissions:
+      id-token: write   # required for trusted publishing (OIDC)
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Inventory
+        run: ls -la dist/
+      - name: Publish to PyPI
+        uses: PyO3/maturin-action@v1
+        with:
+          command: upload
+          args: --non-interactive --skip-existing dist/*

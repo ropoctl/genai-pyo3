@@ -8,3 +8,5 @@ __pycache__/
 *.dylib
 *.dSYM/
 .DS_Store
+dist/
+uv.lock
