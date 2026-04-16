@@ -280,6 +280,12 @@ class Client:
         request: ChatRequestLike,
         options: ChatOptionsLike | None = ...,
     ) -> _ChatStream: ...
+    async def achat_via_stream(
+        self,
+        model: str,
+        request: ChatRequestLike,
+        options: ChatOptionsLike | None = ...,
+    ) -> ChatResponse: ...
 
 __all__ = [
     "ChatMessage",

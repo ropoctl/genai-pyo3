@@ -640,6 +640,74 @@ impl PyClient {
             })
         })
     }
+
+    /// Run the request as a stream and return a fully-collected
+    /// :class:`ChatResponse`. Useful for providers whose backend only
+    /// accepts ``stream=true`` (e.g. OpenAI's Responses API) but whose
+    /// callers still want a single synchronous result.
+    ///
+    /// `capture_content`, `capture_reasoning_content`,
+    /// `capture_tool_calls`, and `capture_usage` are forced on so the
+    /// terminal `StreamEnd` carries the aggregated content — callers do
+    /// not need to configure capture themselves.
+    #[pyo3(signature = (model, request, options = None))]
+    fn achat_via_stream<'py>(
+        &self,
+        py: Python<'py>,
+        model: String,
+        request: Bound<'py, PyAny>,
+        options: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let chat_req = coerce_chat_request(request)?;
+        let mut chat_options = coerce_chat_options(options)?.unwrap_or_default();
+        chat_options.capture_content = Some(true);
+        chat_options.capture_reasoning_content = Some(true);
+        chat_options.capture_tool_calls = Some(true);
+        chat_options.capture_usage = Some(true);
+        let client = self.inner.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let stream_res = client
+                .exec_chat_stream(model, chat_req, Some(&chat_options))
+                .await
+                .map_err(to_runtime_error)?;
+
+            let model_iden = stream_res.model_iden.clone();
+            let mut stream = stream_res.stream;
+            let mut end: Option<StreamEnd> = None;
+            while let Some(event) = stream.next().await {
+                let event = event.map_err(to_runtime_error)?;
+                if let ChatStreamEvent::End(e) = event {
+                    end = Some(e);
+                    break;
+                }
+            }
+
+            let end = end.ok_or_else(|| {
+                PyRuntimeError::new_err("stream ended without a terminal End event")
+            })?;
+            let content = end
+                .captured_content
+                .unwrap_or_else(genai::chat::MessageContent::default);
+            let reasoning_content = end.captured_reasoning_content;
+            let usage = end.captured_usage.unwrap_or_default();
+
+            Python::attach(|py| {
+                Py::new(
+                    py,
+                    PyChatResponse {
+                        inner_content: content,
+                        reasoning_content,
+                        model_adapter_kind: model_iden.adapter_kind.to_string(),
+                        model_name: model_iden.model_name.to_string(),
+                        provider_model_adapter_kind: model_iden.adapter_kind.to_string(),
+                        provider_model_name: model_iden.model_name.to_string(),
+                        usage: to_py_usage(&usage),
+                    },
+                )
+            })
+        })
+    }
 }
 
 #[pyclass(name = "_ChatStream")]
