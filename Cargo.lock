@@ -433,7 +433,7 @@ dependencies = [
 
 [[package]]
 name = "genai-pyo3"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "futures",
  "genai",
