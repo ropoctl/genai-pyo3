@@ -24,13 +24,17 @@ permissions:
   contents: read
 
 jobs:
-  # --- Linux: x86_64 + aarch64 via manylinux2014 ------------------------------
+  # --- Linux: x86_64 only (manylinux2014) -------------------------------------
+  # aarch64 is intentionally omitted: aws-lc-sys (pulled transitively via
+  # rustls → reqwest → rust-genai) fails to cross-compile in the qemu'd
+  # manylinux container. aarch64 linux users fall back to the sdist; add the
+  # target back here once the aws-lc-sys cross-build works.
   linux:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        target: [x86_64, aarch64]
+        target: [x86_64]
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
