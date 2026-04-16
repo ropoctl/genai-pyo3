@@ -7,6 +7,7 @@ use genai::chat::{
 use genai::resolver::{AuthData, AuthResolver, Endpoint, ServiceTargetResolver};
 use pyo3::exceptions::{PyRuntimeError, PyStopAsyncIteration, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyList};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::runtime::Builder;
@@ -49,6 +50,23 @@ impl PyChatMessage {
             tool_calls,
             tool_response_call_id,
         })
+    }
+
+    fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let dict = PyDict::new(py);
+        dict.set_item("role", self.role.clone())?;
+        dict.set_item("content", self.content.clone())?;
+        match &self.tool_calls {
+            Some(tool_calls) => {
+                dict.set_item("tool_calls", py_tool_calls_to_py(py, tool_calls)?)?
+            }
+            None => dict.set_item("tool_calls", py.None())?,
+        }
+        match &self.tool_response_call_id {
+            Some(call_id) => dict.set_item("tool_response_call_id", call_id.clone())?,
+            None => dict.set_item("tool_response_call_id", py.None())?,
+        }
+        Ok(dict.into_any())
     }
 }
 
@@ -258,6 +276,26 @@ impl PyToolCall {
             thought_signatures,
         }
     }
+
+    #[getter]
+    fn fn_arguments(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let parsed = serde_json::from_str::<serde_json::Value>(&self.fn_arguments_json)
+            .unwrap_or(serde_json::Value::Null);
+        json_value_to_py(py, &parsed)
+    }
+
+    fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let dict = PyDict::new(py);
+        dict.set_item("call_id", self.call_id.clone())?;
+        dict.set_item("fn_name", self.fn_name.clone())?;
+        dict.set_item("fn_arguments", self.fn_arguments(py)?)?;
+        dict.set_item("fn_arguments_json", self.fn_arguments_json.clone())?;
+        match &self.thought_signatures {
+            Some(signatures) => dict.set_item("thought_signatures", signatures.clone())?,
+            None => dict.set_item("thought_signatures", py.None())?,
+        }
+        Ok(dict.into_any())
+    }
 }
 
 #[pyclass(name = "Usage", from_py_object)]
@@ -285,6 +323,23 @@ impl PyUsage {
             completion_tokens,
             total_tokens,
         }
+    }
+
+    fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let dict = PyDict::new(py);
+        match self.prompt_tokens {
+            Some(value) => dict.set_item("prompt_tokens", value)?,
+            None => dict.set_item("prompt_tokens", py.None())?,
+        }
+        match self.completion_tokens {
+            Some(value) => dict.set_item("completion_tokens", value)?,
+            None => dict.set_item("completion_tokens", py.None())?,
+        }
+        match self.total_tokens {
+            Some(value) => dict.set_item("total_tokens", value)?,
+            None => dict.set_item("total_tokens", py.None())?,
+        }
+        Ok(dict.into_any())
     }
 }
 
@@ -352,6 +407,29 @@ impl PyChatResponse {
             tool_calls: tool_calls.unwrap_or_default(),
         }
     }
+
+    fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let dict = PyDict::new(py);
+        match &self.text {
+            Some(text) => dict.set_item("text", text.clone())?,
+            None => dict.set_item("text", py.None())?,
+        }
+        dict.set_item("texts", self.texts.clone())?;
+        match &self.reasoning_content {
+            Some(reasoning) => dict.set_item("reasoning_content", reasoning.clone())?,
+            None => dict.set_item("reasoning_content", py.None())?,
+        }
+        dict.set_item("model_adapter_kind", self.model_adapter_kind.clone())?;
+        dict.set_item("model_name", self.model_name.clone())?;
+        dict.set_item(
+            "provider_model_adapter_kind",
+            self.provider_model_adapter_kind.clone(),
+        )?;
+        dict.set_item("provider_model_name", self.provider_model_name.clone())?;
+        dict.set_item("usage", self.usage.to_dict(py)?)?;
+        dict.set_item("tool_calls", py_tool_calls_to_py(py, &self.tool_calls)?)?;
+        Ok(dict.into_any())
+    }
 }
 
 #[pyclass(name = "StreamEnd", from_py_object)]
@@ -394,6 +472,33 @@ impl PyStreamEnd {
             captured_tool_calls,
         }
     }
+
+    fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let dict = PyDict::new(py);
+        match &self.captured_usage {
+            Some(usage) => dict.set_item("captured_usage", usage.to_dict(py)?)?,
+            None => dict.set_item("captured_usage", py.None())?,
+        }
+        match &self.captured_first_text {
+            Some(text) => dict.set_item("captured_first_text", text.clone())?,
+            None => dict.set_item("captured_first_text", py.None())?,
+        }
+        match &self.captured_texts {
+            Some(texts) => dict.set_item("captured_texts", texts.clone())?,
+            None => dict.set_item("captured_texts", py.None())?,
+        }
+        match &self.captured_reasoning_content {
+            Some(reasoning) => dict.set_item("captured_reasoning_content", reasoning.clone())?,
+            None => dict.set_item("captured_reasoning_content", py.None())?,
+        }
+        match &self.captured_tool_calls {
+            Some(tool_calls) => {
+                dict.set_item("captured_tool_calls", py_tool_calls_to_py(py, tool_calls)?)?
+            }
+            None => dict.set_item("captured_tool_calls", py.None())?,
+        }
+        Ok(dict.into_any())
+    }
 }
 
 #[pyclass(name = "ChatStreamEvent", from_py_object)]
@@ -425,6 +530,24 @@ impl PyChatStreamEvent {
             tool_call,
             end,
         }
+    }
+
+    fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let dict = PyDict::new(py);
+        dict.set_item("kind", self.kind.clone())?;
+        match &self.content {
+            Some(content) => dict.set_item("content", content.clone())?,
+            None => dict.set_item("content", py.None())?,
+        }
+        match &self.tool_call {
+            Some(tool_call) => dict.set_item("tool_call", tool_call.to_dict(py)?)?,
+            None => dict.set_item("tool_call", py.None())?,
+        }
+        match &self.end {
+            Some(end) => dict.set_item("end", end.to_dict(py)?)?,
+            None => dict.set_item("end", py.None())?,
+        }
+        Ok(dict.into_any())
     }
 }
 
@@ -601,6 +724,54 @@ fn parse_chat_role(role: &str) -> PyResult<ChatRole> {
             "invalid chat role '{role}'. expected one of: system, user, assistant, tool"
         ))),
     }
+}
+
+fn json_value_to_py(py: Python<'_>, value: &serde_json::Value) -> PyResult<Py<PyAny>> {
+    match value {
+        serde_json::Value::Null => Ok(py.None()),
+        serde_json::Value::Bool(value) => {
+            Ok((*value).into_pyobject(py)?.to_owned().unbind().into_any())
+        }
+        serde_json::Value::Number(value) => {
+            if let Some(integer) = value.as_i64() {
+                Ok(integer.into_pyobject(py)?.unbind().into_any())
+            } else if let Some(integer) = value.as_u64() {
+                Ok(integer.into_pyobject(py)?.unbind().into_any())
+            } else if let Some(float) = value.as_f64() {
+                Ok(float.into_pyobject(py)?.unbind().into_any())
+            } else {
+                Ok(py.None())
+            }
+        }
+        serde_json::Value::String(value) => {
+            Ok(value.clone().into_pyobject(py)?.unbind().into_any())
+        }
+        serde_json::Value::Array(values) => {
+            let list = PyList::empty(py);
+            for value in values {
+                list.append(json_value_to_py(py, value)?)?;
+            }
+            Ok(list.unbind().into_any())
+        }
+        serde_json::Value::Object(values) => {
+            let dict = PyDict::new(py);
+            for (key, value) in values {
+                dict.set_item(key, json_value_to_py(py, value)?)?;
+            }
+            Ok(dict.unbind().into_any())
+        }
+    }
+}
+
+fn py_tool_calls_to_py<'py>(
+    py: Python<'py>,
+    tool_calls: &[PyToolCall],
+) -> PyResult<Bound<'py, PyAny>> {
+    let list = PyList::empty(py);
+    for tool_call in tool_calls {
+        list.append(tool_call.to_dict(py)?)?;
+    }
+    Ok(list.into_any())
 }
 
 fn validate_role(role: &str) -> PyResult<()> {
