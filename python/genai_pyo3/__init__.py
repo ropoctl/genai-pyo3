@@ -123,16 +123,40 @@ def _chat_message_from_python(obj):
 ToolCall.from_python = staticmethod(_tool_call_from_python)
 ChatMessage.from_python = staticmethod(_chat_message_from_python)
 
+
+# Re-export the TypedDict shapes from .types so users can annotate without a
+# separate import (`from genai_pyo3 import ChatRequestDict`).
+from .types import (
+    ChatMessageDict,
+    ChatOptionsDict,
+    ChatOptionsLike,
+    ChatRequestDict,
+    ChatRequestLike,
+    ContentPartDict,
+    JsonSpecDict,
+    Role,
+    ToolDict,
+)
+
 __all__ = [
-    "Client",
     "ChatMessage",
-    "ChatRequest",
+    "ChatMessageDict",
     "ChatOptions",
+    "ChatOptionsDict",
+    "ChatOptionsLike",
+    "ChatRequest",
+    "ChatRequestDict",
+    "ChatRequestLike",
     "ChatResponse",
     "ChatStreamEvent",
+    "Client",
+    "ContentPartDict",
+    "JsonSpec",
+    "JsonSpecDict",
+    "Role",
     "StreamEnd",
     "Tool",
     "ToolCall",
+    "ToolDict",
     "Usage",
-    "JsonSpec",
 ]

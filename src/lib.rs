@@ -8,6 +8,7 @@ use genai::resolver::{AuthData, AuthResolver, Endpoint, ServiceTargetResolver};
 use pyo3::exceptions::{PyRuntimeError, PyStopAsyncIteration, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+use pythonize::depythonize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::runtime::Builder;
@@ -580,15 +581,15 @@ impl PyClient {
     }
 
     #[pyo3(signature = (model, request, options = None))]
-    fn chat(
+    fn chat<'py>(
         &self,
-        py: Python<'_>,
+        py: Python<'py>,
         model: String,
-        request: PyChatRequest,
-        options: Option<PyChatOptions>,
+        request: Bound<'py, PyAny>,
+        options: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Py<PyChatResponse>> {
-        let chat_req = ChatRequest::try_from(request)?;
-        let chat_options = options.map(ChatOptions::from);
+        let chat_req = coerce_chat_request(request)?;
+        let chat_options = coerce_chat_options(options)?;
 
         let runtime = Builder::new_multi_thread()
             .enable_all()
@@ -609,11 +610,11 @@ impl PyClient {
         &self,
         py: Python<'py>,
         model: String,
-        request: PyChatRequest,
-        options: Option<PyChatOptions>,
+        request: Bound<'py, PyAny>,
+        options: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let chat_req = ChatRequest::try_from(request)?;
-        let chat_options = options.map(ChatOptions::from);
+        let chat_req = coerce_chat_request(request)?;
+        let chat_options = coerce_chat_options(options)?;
         let client = self.inner.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -631,11 +632,11 @@ impl PyClient {
         &self,
         py: Python<'py>,
         model: String,
-        request: PyChatRequest,
-        options: Option<PyChatOptions>,
+        request: Bound<'py, PyAny>,
+        options: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let chat_req = ChatRequest::try_from(request)?;
-        let chat_options = options.map(ChatOptions::from);
+        let chat_req = coerce_chat_request(request)?;
+        let chat_options = coerce_chat_options(options)?;
         let client = self.inner.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -819,6 +820,44 @@ impl TryFrom<PyChatMessage> for ChatMessage {
             }
         }
     }
+}
+
+/// Accept either a `PyChatRequest` pyclass instance or any Python object that
+/// depythonizes into a `serde_json::Value` matching the rust-genai
+/// `ChatRequest` serde shape (dict / list / primitives).
+fn coerce_chat_request(obj: Bound<'_, PyAny>) -> PyResult<ChatRequest> {
+    if let Ok(typed) = obj.extract::<PyChatRequest>() {
+        return ChatRequest::try_from(typed);
+    }
+    let value: serde_json::Value = depythonize(&obj).map_err(|err| {
+        PyValueError::new_err(format!(
+            "chat request must be a ChatRequest or a JSON-compatible dict: {err}"
+        ))
+    })?;
+    serde_json::from_value(value).map_err(|err| {
+        PyValueError::new_err(format!("chat request dict does not match schema: {err}"))
+    })
+}
+
+/// Accept an optional `PyChatOptions` pyclass or a JSON-compatible dict.
+fn coerce_chat_options(obj: Option<Bound<'_, PyAny>>) -> PyResult<Option<ChatOptions>> {
+    let Some(obj) = obj else { return Ok(None) };
+    if obj.is_none() {
+        return Ok(None);
+    }
+    if let Ok(typed) = obj.extract::<PyChatOptions>() {
+        return Ok(Some(ChatOptions::from(typed)));
+    }
+    let value: serde_json::Value = depythonize(&obj).map_err(|err| {
+        PyValueError::new_err(format!(
+            "chat options must be a ChatOptions or a JSON-compatible dict: {err}"
+        ))
+    })?;
+    serde_json::from_value(value)
+        .map(Some)
+        .map_err(|err| {
+            PyValueError::new_err(format!("chat options dict does not match schema: {err}"))
+        })
 }
 
 impl TryFrom<PyChatRequest> for ChatRequest {
