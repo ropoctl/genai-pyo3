@@ -5,6 +5,7 @@ from ._genai_pyo3 import (
     ChatResponse,
     ChatStreamEvent,
     Client,
+    JsonSpec,
     StreamEnd,
     Tool,
     ToolCall,
@@ -22,4 +23,5 @@ __all__ = [
     "Tool",
     "ToolCall",
     "Usage",
+    "JsonSpec",
 ]

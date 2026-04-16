@@ -1,8 +1,8 @@
 use futures::StreamExt;
 use genai::adapter::AdapterKind;
 use genai::chat::{
-    ChatMessage, ChatOptions, ChatRequest, ChatRole, ChatStream, ChatStreamEvent, StreamEnd, Tool,
-    ToolCall, ToolResponse, Usage,
+    ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat, ChatRole, ChatStream,
+    ChatStreamEvent, JsonSpec, StreamEnd, Tool, ToolCall, ToolResponse, Usage,
 };
 use genai::resolver::{AuthData, AuthResolver, Endpoint, ServiceTargetResolver};
 use pyo3::exceptions::{PyRuntimeError, PyStopAsyncIteration, PyValueError};
@@ -139,6 +139,10 @@ struct PyChatOptions {
     #[pyo3(get, set)]
     capture_raw_body: Option<bool>,
     #[pyo3(get, set)]
+    response_json_spec: Option<PyJsonSpec>,
+    #[pyo3(get, set)]
+    response_json_mode: Option<bool>,
+    #[pyo3(get, set)]
     normalize_reasoning_content: Option<bool>,
     #[pyo3(get, set)]
     seed: Option<u64>,
@@ -159,6 +163,8 @@ impl PyChatOptions {
 		capture_reasoning_content = None,
 			capture_tool_calls = None,
 			capture_raw_body = None,
+			response_json_spec = None,
+			response_json_mode = None,
 			normalize_reasoning_content = None,
 			seed = None,
             extra_headers = None,
@@ -173,6 +179,8 @@ impl PyChatOptions {
         capture_reasoning_content: Option<bool>,
         capture_tool_calls: Option<bool>,
         capture_raw_body: Option<bool>,
+        response_json_spec: Option<PyJsonSpec>,
+        response_json_mode: Option<bool>,
         normalize_reasoning_content: Option<bool>,
         seed: Option<u64>,
         extra_headers: Option<HashMap<String, String>>,
@@ -187,9 +195,35 @@ impl PyChatOptions {
             capture_reasoning_content,
             capture_tool_calls,
             capture_raw_body,
+            response_json_spec,
+            response_json_mode,
             normalize_reasoning_content,
             seed,
             extra_headers,
+        }
+    }
+}
+
+#[pyclass(name = "JsonSpec", from_py_object)]
+#[derive(Clone)]
+struct PyJsonSpec {
+    #[pyo3(get, set)]
+    name: String,
+    #[pyo3(get, set)]
+    schema_json: String,
+    #[pyo3(get, set)]
+    description: Option<String>,
+}
+
+#[pymethods]
+impl PyJsonSpec {
+    #[new]
+    #[pyo3(signature = (name, schema_json, description = None))]
+    fn new(name: String, schema_json: String, description: Option<String>) -> Self {
+        Self {
+            name,
+            schema_json,
+            description,
         }
     }
 }
@@ -546,6 +580,7 @@ fn _genai_pyo3(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyChatMessage>()?;
     module.add_class::<PyChatRequest>()?;
     module.add_class::<PyChatOptions>()?;
+    module.add_class::<PyJsonSpec>()?;
     module.add_class::<PyTool>()?;
     module.add_class::<PyToolCall>()?;
     module.add_class::<PyUsage>()?;
@@ -655,6 +690,20 @@ impl TryFrom<PyChatRequest> for ChatRequest {
 
 impl From<PyChatOptions> for ChatOptions {
     fn from(options: PyChatOptions) -> Self {
+        let response_format = if let Some(spec) = options.response_json_spec {
+            let schema = serde_json::from_str::<serde_json::Value>(&spec.schema_json)
+                .unwrap_or(serde_json::Value::Null);
+            let mut json_spec = JsonSpec::new(spec.name, schema);
+            if let Some(description) = spec.description {
+                json_spec = json_spec.with_description(description);
+            }
+            Some(ChatResponseFormat::JsonSpec(json_spec))
+        } else if options.response_json_mode.unwrap_or(false) {
+            Some(ChatResponseFormat::JsonMode)
+        } else {
+            None
+        };
+
         Self {
             temperature: options.temperature,
             max_tokens: options.max_tokens,
@@ -665,6 +714,7 @@ impl From<PyChatOptions> for ChatOptions {
             capture_reasoning_content: options.capture_reasoning_content,
             capture_tool_calls: options.capture_tool_calls,
             capture_raw_body: options.capture_raw_body,
+            response_format,
             normalize_reasoning_content: options.normalize_reasoning_content,
             seed: options.seed,
             extra_headers: options.extra_headers.map(Into::into),
