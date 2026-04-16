@@ -345,77 +345,71 @@ impl PyUsage {
 }
 
 #[pyclass(name = "ChatResponse", from_py_object)]
+/// Isomorphic to rust-genai's `ChatResponse`:
+///   - `content` is the single source of truth (list of lowercase-keyed
+///     content-part dicts).
+///   - `first_text()`, `texts()`, `tool_calls()` are derived views.
+///
+/// This mirrors rust-genai's `ChatResponse.first_text()/texts()/tool_calls()`
+/// getter methods rather than flattening them into independently-mutable
+/// fields (which was the old PyChatResponse shape and required callers to
+/// coalesce `text or "\n".join(texts)` themselves).
 #[derive(Clone)]
 struct PyChatResponse {
-    #[pyo3(get, set)]
-    text: Option<String>,
-    #[pyo3(get, set)]
-    texts: Vec<String>,
-    #[pyo3(get, set)]
+    inner_content: genai::chat::MessageContent,
+    #[pyo3(get)]
     reasoning_content: Option<String>,
-    #[pyo3(get, set)]
+    #[pyo3(get)]
     model_adapter_kind: String,
-    #[pyo3(get, set)]
+    #[pyo3(get)]
     model_name: String,
-    #[pyo3(get, set)]
+    #[pyo3(get)]
     provider_model_adapter_kind: String,
-    #[pyo3(get, set)]
+    #[pyo3(get)]
     provider_model_name: String,
-    #[pyo3(get, set)]
+    #[pyo3(get)]
     usage: PyUsage,
-    #[pyo3(get, set)]
-    tool_calls: Vec<PyToolCall>,
 }
 
 #[pymethods]
 impl PyChatResponse {
-    #[new]
-    #[pyo3(signature = (
-		text = None,
-		texts = None,
-		reasoning_content = None,
-		model_adapter_kind = None,
-		model_name = None,
-		provider_model_adapter_kind = None,
-		provider_model_name = None,
-		usage = None,
-		tool_calls = None,
-	))]
-    fn new(
-        text: Option<String>,
-        texts: Option<Vec<String>>,
-        reasoning_content: Option<String>,
-        model_adapter_kind: Option<String>,
-        model_name: Option<String>,
-        provider_model_adapter_kind: Option<String>,
-        provider_model_name: Option<String>,
-        usage: Option<PyUsage>,
-        tool_calls: Option<Vec<PyToolCall>>,
-    ) -> Self {
-        Self {
-            text,
-            texts: texts.unwrap_or_default(),
-            reasoning_content,
-            model_adapter_kind: model_adapter_kind.unwrap_or_default(),
-            model_name: model_name.unwrap_or_default(),
-            provider_model_adapter_kind: provider_model_adapter_kind.unwrap_or_default(),
-            provider_model_name: provider_model_name.unwrap_or_default(),
-            usage: usage.unwrap_or(PyUsage {
-                prompt_tokens: None,
-                completion_tokens: None,
-                total_tokens: None,
-            }),
-            tool_calls: tool_calls.unwrap_or_default(),
-        }
+    /// Full content as a list of lowercase-keyed content-part dicts
+    /// (``[{"text": "..."}, {"tool_call": {...}}, ...]``).
+    #[getter]
+    fn content<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let mut value = serde_json::to_value(&self.inner_content)
+            .map_err(|err| PyRuntimeError::new_err(format!("serialize content: {err}")))?;
+        lowercase_content_part_keys(&mut value);
+        pythonize::pythonize(py, &value)
+            .map_err(|err| PyRuntimeError::new_err(format!("pythonize content: {err}")))
+    }
+
+    /// Return the first text segment in the response content, if any.
+    fn first_text(&self) -> Option<String> {
+        self.inner_content.first_text().map(str::to_string)
+    }
+
+    /// Return every text segment in the response content, in order.
+    fn texts(&self) -> Vec<String> {
+        self.inner_content
+            .texts()
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Return every tool call in the response content, in order.
+    fn tool_calls(&self) -> PyResult<Vec<PyToolCall>> {
+        self.inner_content
+            .tool_calls()
+            .into_iter()
+            .map(to_py_tool_call)
+            .collect()
     }
 
     fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let dict = PyDict::new(py);
-        match &self.text {
-            Some(text) => dict.set_item("text", text.clone())?,
-            None => dict.set_item("text", py.None())?,
-        }
-        dict.set_item("texts", self.texts.clone())?;
+        dict.set_item("content", self.content(py)?)?;
         match &self.reasoning_content {
             Some(reasoning) => dict.set_item("reasoning_content", reasoning.clone())?,
             None => dict.set_item("reasoning_content", py.None())?,
@@ -428,75 +422,69 @@ impl PyChatResponse {
         )?;
         dict.set_item("provider_model_name", self.provider_model_name.clone())?;
         dict.set_item("usage", self.usage.to_dict(py)?)?;
-        dict.set_item("tool_calls", py_tool_calls_to_py(py, &self.tool_calls)?)?;
         Ok(dict.into_any())
     }
 }
 
 #[pyclass(name = "StreamEnd", from_py_object)]
+/// Isomorphic to rust-genai's `StreamEnd`: one source of truth
+/// (`captured_content: Option<MessageContent>`) plus derived view methods.
 #[derive(Clone)]
 struct PyStreamEnd {
-    #[pyo3(get, set)]
+    captured_content: Option<genai::chat::MessageContent>,
+    #[pyo3(get)]
     captured_usage: Option<PyUsage>,
-    #[pyo3(get, set)]
-    captured_first_text: Option<String>,
-    #[pyo3(get, set)]
-    captured_texts: Option<Vec<String>>,
-    #[pyo3(get, set)]
+    #[pyo3(get)]
     captured_reasoning_content: Option<String>,
-    #[pyo3(get, set)]
-    captured_tool_calls: Option<Vec<PyToolCall>>,
 }
 
 #[pymethods]
 impl PyStreamEnd {
-    #[new]
-    #[pyo3(signature = (
-		captured_usage = None,
-		captured_first_text = None,
-		captured_texts = None,
-		captured_reasoning_content = None,
-		captured_tool_calls = None,
-	))]
-    fn new(
-        captured_usage: Option<PyUsage>,
-        captured_first_text: Option<String>,
-        captured_texts: Option<Vec<String>>,
-        captured_reasoning_content: Option<String>,
-        captured_tool_calls: Option<Vec<PyToolCall>>,
-    ) -> Self {
-        Self {
-            captured_usage,
-            captured_first_text,
-            captured_texts,
-            captured_reasoning_content,
-            captured_tool_calls,
-        }
+    /// Captured content as ``list[dict]`` (same shape as
+    /// ``ChatResponse.content``), or ``None`` when the stream carried no
+    /// content capture.
+    #[getter]
+    fn captured_content<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let Some(content) = self.captured_content.as_ref() else {
+            return Ok(py.None().into_bound(py));
+        };
+        let mut value = serde_json::to_value(content)
+            .map_err(|err| PyRuntimeError::new_err(format!("serialize content: {err}")))?;
+        lowercase_content_part_keys(&mut value);
+        pythonize::pythonize(py, &value)
+            .map_err(|err| PyRuntimeError::new_err(format!("pythonize content: {err}")))
+    }
+
+    fn captured_first_text(&self) -> Option<String> {
+        self.captured_content
+            .as_ref()
+            .and_then(|c| c.first_text().map(str::to_string))
+    }
+
+    fn captured_texts(&self) -> Vec<String> {
+        self.captured_content
+            .as_ref()
+            .map(|c| c.texts().into_iter().map(str::to_string).collect())
+            .unwrap_or_default()
+    }
+
+    fn captured_tool_calls(&self) -> PyResult<Vec<PyToolCall>> {
+        let Some(content) = self.captured_content.as_ref() else {
+            return Ok(Vec::new());
+        };
+        content.tool_calls().into_iter().map(to_py_tool_call).collect()
     }
 
     fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let dict = PyDict::new(py);
+        dict.set_item("captured_content", self.captured_content(py)?)?;
         match &self.captured_usage {
             Some(usage) => dict.set_item("captured_usage", usage.to_dict(py)?)?,
             None => dict.set_item("captured_usage", py.None())?,
         }
-        match &self.captured_first_text {
-            Some(text) => dict.set_item("captured_first_text", text.clone())?,
-            None => dict.set_item("captured_first_text", py.None())?,
-        }
-        match &self.captured_texts {
-            Some(texts) => dict.set_item("captured_texts", texts.clone())?,
-            None => dict.set_item("captured_texts", py.None())?,
-        }
         match &self.captured_reasoning_content {
             Some(reasoning) => dict.set_item("captured_reasoning_content", reasoning.clone())?,
             None => dict.set_item("captured_reasoning_content", py.None())?,
-        }
-        match &self.captured_tool_calls {
-            Some(tool_calls) => {
-                dict.set_item("captured_tool_calls", py_tool_calls_to_py(py, tool_calls)?)?
-            }
-            None => dict.set_item("captured_tool_calls", py.None())?,
         }
         Ok(dict.into_any())
     }
@@ -878,6 +866,30 @@ fn title_case_content_part(s: &str) -> Option<&'static str> {
     }
 }
 
+/// Inverse of `title_case_content_part`: rewrite the externally-tagged
+/// `ContentPart` variant names in a serialized `MessageContent` value from
+/// Rust title-case to the Python-facing lowercase form. Variants we don't
+/// know are left untouched (forward-compat with upstream rust-genai adding
+/// new parts).
+fn lowercase_content_part_keys(value: &mut serde_json::Value) {
+    let Some(parts) = value.as_array_mut() else { return };
+    for part in parts {
+        let Some(obj) = part.as_object_mut() else { continue };
+        let Some(title_key) = obj.keys().next().cloned() else { continue };
+        let lower = match title_key.as_str() {
+            "Text" => "text",
+            "Binary" => "binary",
+            "ToolCall" => "tool_call",
+            "ToolResponse" => "tool_response",
+            "ThoughtSignature" => "thought_signature",
+            "ReasoningContent" => "reasoning_content",
+            _ => continue,
+        };
+        let inner = obj.remove(&title_key).unwrap();
+        obj.insert(lower.to_string(), inner);
+    }
+}
+
 /// Strictly require lowercase variant names and title-case them into the
 /// serde form. Any other spelling (including native title-case) is a
 /// ValueError — rust-genai's enum names are an implementation detail; the
@@ -1046,59 +1058,25 @@ fn to_py_chat_response(
     py: Python<'_>,
     response: genai::chat::ChatResponse,
 ) -> PyResult<Py<PyChatResponse>> {
-    let text = response.first_text().map(|t| t.to_string());
-    let texts = response
-        .texts()
-        .into_iter()
-        .map(|t| t.to_string())
-        .collect::<Vec<_>>();
-    let tool_calls = response
-        .tool_calls()
-        .into_iter()
-        .map(to_py_tool_call)
-        .collect::<PyResult<Vec<_>>>()?;
-
     Py::new(
         py,
         PyChatResponse {
-            text,
-            texts,
+            inner_content: response.content,
             reasoning_content: response.reasoning_content,
             model_adapter_kind: response.model_iden.adapter_kind.to_string(),
             model_name: response.model_iden.model_name.to_string(),
             provider_model_adapter_kind: response.provider_model_iden.adapter_kind.to_string(),
             provider_model_name: response.provider_model_iden.model_name.to_string(),
             usage: to_py_usage(&response.usage),
-            tool_calls,
         },
     )
 }
 
 fn to_py_stream_end(end: StreamEnd) -> PyResult<PyStreamEnd> {
-    let captured_usage = end.captured_usage.as_ref().map(to_py_usage);
-    let captured_first_text = end.captured_first_text().map(|t| t.to_string());
-    let captured_texts = end.captured_texts().map(|values| {
-        values
-            .into_iter()
-            .map(|value| value.to_string())
-            .collect::<Vec<_>>()
-    });
-    let captured_tool_calls = end
-        .captured_tool_calls()
-        .map(|calls| {
-            calls
-                .into_iter()
-                .map(to_py_tool_call)
-                .collect::<PyResult<Vec<_>>>()
-        })
-        .transpose()?;
-
     Ok(PyStreamEnd {
-        captured_usage,
-        captured_first_text,
-        captured_texts,
+        captured_content: end.captured_content,
+        captured_usage: end.captured_usage.as_ref().map(to_py_usage),
         captured_reasoning_content: end.captured_reasoning_content,
-        captured_tool_calls,
     })
 }
 

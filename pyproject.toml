@@ -4,11 +4,14 @@ build-backend = "maturin"
 
 [project]
 name = "genai-pyo3"
-version = "0.1.6"
+version = "0.1.7"
 description = "Python bindings for rust-genai"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT OR Apache-2.0" }
+dependencies = [
+    "typing_extensions>=4.6.0",  # NotRequired on Python <3.11
+]
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: 3",

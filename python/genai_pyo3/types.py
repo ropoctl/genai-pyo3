@@ -14,7 +14,11 @@ libraries that re-export our types).
 
 from __future__ import annotations
 
-from typing import Any, Literal, NotRequired, TypedDict, Union
+from typing import Any, Literal, TypedDict, Union
+
+# NotRequired is in typing only on 3.11+. typing_extensions back-ports it to
+# 3.9 and is a transitive dep of most of the Python ecosystem already.
+from typing_extensions import NotRequired
 
 if False:  # TYPE_CHECKING
     # Only imported by stub-aware tools; keeps runtime import cycle out.

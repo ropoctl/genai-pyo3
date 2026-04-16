@@ -12,7 +12,9 @@ serde::from_value`` with no runtime translation layer.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Any, Literal, NotRequired, TypedDict
+from typing import Any, Literal, TypedDict
+
+from typing_extensions import NotRequired
 
 # ---------------------------------------------------------------------------
 # TypedDict shapes (dict form accepted by Client.{chat,achat,astream_chat})
@@ -194,23 +196,43 @@ class Usage:
     def to_dict(self) -> dict[str, Any]: ...
 
 class ChatResponse:
-    text: str | None
-    texts: list[str]
+    """Isomorphic to ``genai::chat::ChatResponse``.
+
+    ``content`` is the single source of truth. ``first_text()``, ``texts()``,
+    and ``tool_calls()`` are derived views, matching rust-genai's getter
+    method names and semantics.
+    """
+
+    @property
+    def content(self) -> list[ContentPartDict]: ...
     reasoning_content: str | None
     model_adapter_kind: str
     model_name: str
     provider_model_adapter_kind: str
     provider_model_name: str
     usage: Usage
-    tool_calls: list[ToolCall]
 
+    def first_text(self) -> str | None: ...
+    def texts(self) -> list[str]: ...
+    def tool_calls(self) -> list[ToolCall]: ...
     def to_dict(self) -> dict[str, Any]: ...
 
 class StreamEnd:
-    captured_text: str | None
+    """Isomorphic to ``genai::chat::StreamEnd``.
+
+    ``captured_content`` is the single source of truth. ``captured_first_text``,
+    ``captured_texts``, and ``captured_tool_calls`` are derived views.
+    """
+
+    @property
+    def captured_content(self) -> list[ContentPartDict] | None: ...
     captured_reasoning_content: str | None
-    captured_tool_calls: list[ToolCall]
     captured_usage: Usage | None
+
+    def captured_first_text(self) -> str | None: ...
+    def captured_texts(self) -> list[str]: ...
+    def captured_tool_calls(self) -> list[ToolCall]: ...
+    def to_dict(self) -> dict[str, Any]: ...
 
 class ChatStreamEvent:
     kind: str
