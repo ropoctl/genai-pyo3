@@ -1278,13 +1278,19 @@ fn build_client_with_overrides(
     let adapter_kind = parse_adapter_kind(&provider)?;
     let mut builder = genai::Client::builder();
 
+    // When the user explicitly specifies a provider (e.g. "openai") but the
+    // model name is not recognised by rust-genai's `from_model` mapping
+    // (e.g. "MiniMax-M2.7"), the model gets assigned to the Ollama fallback
+    // adapter.  The resolvers below used to guard on
+    // `adapter_kind == model.adapter_kind`, which meant the api_key and
+    // base_url overrides were silently skipped for any unrecognised model.
+    //
+    // Fix: always apply the overrides *and* correct the adapter_kind so
+    // the right wire protocol is used regardless of model name.
+
     if let Some(api_key) = api_key {
-        let auth_resolver = AuthResolver::from_resolver_fn(move |model_iden: genai::ModelIden| {
-            if model_iden.adapter_kind == adapter_kind {
-                Ok(Some(AuthData::from_single(api_key.clone())))
-            } else {
-                Ok(None)
-            }
+        let auth_resolver = AuthResolver::from_resolver_fn(move |_model_iden: genai::ModelIden| {
+            Ok(Some(AuthData::from_single(api_key.clone())))
         });
         builder = builder.with_auth_resolver(auth_resolver);
     }
@@ -1292,9 +1298,8 @@ fn build_client_with_overrides(
     if let Some(base_url) = base_url {
         let service_target_resolver = ServiceTargetResolver::from_resolver_fn(
             move |mut service_target: genai::ServiceTarget| {
-                if service_target.model.adapter_kind == adapter_kind {
-                    service_target.endpoint = Endpoint::from_owned(base_url.clone());
-                }
+                service_target.model.adapter_kind = adapter_kind;
+                service_target.endpoint = Endpoint::from_owned(base_url.clone());
                 Ok(service_target)
             },
         );
