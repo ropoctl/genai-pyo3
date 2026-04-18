@@ -1,6 +1,6 @@
 [package]
 name = "genai-pyo3"
-version = "0.1.9"
+version = "0.1.10"
 edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
@@ -11,7 +11,11 @@ name = "_genai_pyo3"
 crate-type = ["cdylib"]
 
 [dependencies]
-genai = { git = "https://github.com/jeremychone/rust-genai" }
+# Using the ropoctl fork for `with_default_adapter_kind` support (see
+# rust-genai fork branch feat/default-adapter-kind; PR pending upstream
+# against jeremychone/rust-genai). Flip back to the upstream repo once
+# the feature lands there.
+genai = { git = "https://github.com/ropoctl/rust-genai", rev = "cf10349c1736be276c0935042e7fc99ba91981a5" }
 pyo3 = { version = "0.28", features = ["extension-module"] }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

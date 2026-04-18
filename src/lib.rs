@@ -1276,7 +1276,14 @@ fn build_client_with_overrides(
     base_url: Option<String>,
 ) -> PyResult<PyClient> {
     let adapter_kind = parse_adapter_kind(&provider)?;
-    let mut builder = genai::Client::builder();
+    // Pin the default adapter kind so unrecognized model names (e.g.
+    // provider-specific names like `MiniMax-M2.7` or a locally-served
+    // model) route through the caller's chosen provider instead of
+    // falling through to `AdapterKind::from_model`'s Ollama fallback,
+    // which would cause the resolver gates below to miss and the
+    // base_url / api_key overrides to be silently skipped. Explicit
+    // namespacing (`openai::Foo-Bar`) still takes precedence.
+    let mut builder = genai::Client::builder().with_default_adapter_kind(adapter_kind);
 
     if let Some(api_key) = api_key {
         let auth_resolver = AuthResolver::from_resolver_fn(move |model_iden: genai::ModelIden| {
