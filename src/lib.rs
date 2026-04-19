@@ -11,8 +11,37 @@ use pyo3::types::{PyDict, PyList};
 use pythonize::depythonize;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::runtime::Builder;
 use tokio::sync::Mutex;
+
+/// Default connect-timeout applied by `PyClient::with_*` builders when the
+/// caller doesn't override it. A 30-second cap is long enough to cover any
+/// realistic TCP+TLS handshake and short enough to surface a hung proxy or
+/// an unreachable endpoint before it eats through an entire run. Pass
+/// ``connect_timeout_seconds=None`` explicitly to disable it.
+const DEFAULT_CONNECT_TIMEOUT_SECONDS: f64 = 30.0;
+
+fn web_config_from_timeouts(
+    connect_timeout_seconds: Option<f64>,
+    read_timeout_seconds: Option<f64>,
+    timeout_seconds: Option<f64>,
+) -> Option<genai::WebConfig> {
+    if connect_timeout_seconds.is_none() && read_timeout_seconds.is_none() && timeout_seconds.is_none() {
+        return None;
+    }
+    let mut web_config = genai::WebConfig::default();
+    if let Some(secs) = connect_timeout_seconds {
+        web_config = web_config.with_connect_timeout(Duration::from_secs_f64(secs));
+    }
+    if let Some(secs) = read_timeout_seconds {
+        web_config.read_timeout = Some(Duration::from_secs_f64(secs));
+    }
+    if let Some(secs) = timeout_seconds {
+        web_config = web_config.with_timeout(Duration::from_secs_f64(secs));
+    }
+    Some(web_config)
+}
 
 #[pyclass(name = "Client")]
 struct PyClient {
@@ -591,22 +620,83 @@ impl PyClient {
     }
 
     #[staticmethod]
-    fn with_api_key(provider: String, api_key: String) -> PyResult<Self> {
-        build_client_with_overrides(provider, Some(api_key), None)
+    #[pyo3(signature = (
+        provider,
+        api_key,
+        *,
+        connect_timeout_seconds = DEFAULT_CONNECT_TIMEOUT_SECONDS,
+        read_timeout_seconds = None,
+        timeout_seconds = None,
+    ))]
+    fn with_api_key(
+        provider: String,
+        api_key: String,
+        connect_timeout_seconds: Option<f64>,
+        read_timeout_seconds: Option<f64>,
+        timeout_seconds: Option<f64>,
+    ) -> PyResult<Self> {
+        build_client_with_overrides(
+            provider,
+            Some(api_key),
+            None,
+            connect_timeout_seconds,
+            read_timeout_seconds,
+            timeout_seconds,
+        )
     }
 
     #[staticmethod]
+    #[pyo3(signature = (
+        provider,
+        api_key,
+        base_url,
+        *,
+        connect_timeout_seconds = DEFAULT_CONNECT_TIMEOUT_SECONDS,
+        read_timeout_seconds = None,
+        timeout_seconds = None,
+    ))]
     fn with_api_key_and_base_url(
         provider: String,
         api_key: String,
         base_url: String,
+        connect_timeout_seconds: Option<f64>,
+        read_timeout_seconds: Option<f64>,
+        timeout_seconds: Option<f64>,
     ) -> PyResult<Self> {
-        build_client_with_overrides(provider, Some(api_key), Some(base_url))
+        build_client_with_overrides(
+            provider,
+            Some(api_key),
+            Some(base_url),
+            connect_timeout_seconds,
+            read_timeout_seconds,
+            timeout_seconds,
+        )
     }
 
     #[staticmethod]
-    fn with_base_url(provider: String, base_url: String) -> PyResult<Self> {
-        build_client_with_overrides(provider, None, Some(base_url))
+    #[pyo3(signature = (
+        provider,
+        base_url,
+        *,
+        connect_timeout_seconds = DEFAULT_CONNECT_TIMEOUT_SECONDS,
+        read_timeout_seconds = None,
+        timeout_seconds = None,
+    ))]
+    fn with_base_url(
+        provider: String,
+        base_url: String,
+        connect_timeout_seconds: Option<f64>,
+        read_timeout_seconds: Option<f64>,
+        timeout_seconds: Option<f64>,
+    ) -> PyResult<Self> {
+        build_client_with_overrides(
+            provider,
+            None,
+            Some(base_url),
+            connect_timeout_seconds,
+            read_timeout_seconds,
+            timeout_seconds,
+        )
     }
 
     #[pyo3(signature = (model, request, options = None))]
@@ -1274,6 +1364,9 @@ fn build_client_with_overrides(
     provider: String,
     api_key: Option<String>,
     base_url: Option<String>,
+    connect_timeout_seconds: Option<f64>,
+    read_timeout_seconds: Option<f64>,
+    timeout_seconds: Option<f64>,
 ) -> PyResult<PyClient> {
     let adapter_kind = parse_adapter_kind(&provider)?;
     // Pin the default adapter kind so unrecognized model names (e.g.
@@ -1284,6 +1377,12 @@ fn build_client_with_overrides(
     // base_url / api_key overrides to be silently skipped. Explicit
     // namespacing (`openai::Foo-Bar`) still takes precedence.
     let mut builder = genai::Client::builder().with_default_adapter_kind(adapter_kind);
+
+    if let Some(web_config) =
+        web_config_from_timeouts(connect_timeout_seconds, read_timeout_seconds, timeout_seconds)
+    {
+        builder = builder.with_web_config(web_config);
+    }
 
     if let Some(api_key) = api_key {
         let auth_resolver = AuthResolver::from_resolver_fn(move |model_iden: genai::ModelIden| {

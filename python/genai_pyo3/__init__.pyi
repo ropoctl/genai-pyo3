@@ -265,13 +265,40 @@ ChatOptionsLike = ChatOptions | ChatOptionsDict
 class Client:
     def __new__(cls) -> Client: ...
     @staticmethod
-    def with_api_key(provider: str, api_key: str) -> Client: ...
+    def with_api_key(
+        provider: str,
+        api_key: str,
+        *,
+        connect_timeout_seconds: float | None = ...,
+        read_timeout_seconds: float | None = ...,
+        timeout_seconds: float | None = ...,
+    ) -> Client:
+        """Construct a client scoped to *provider* with *api_key*.
+
+        Timeouts default to a 30s connect-timeout so a stalled TLS
+        handshake or unresponsive proxy can't block forever. Pass
+        ``connect_timeout_seconds=None`` to disable. ``read_timeout_seconds``
+        and ``timeout_seconds`` are opt-in (default ``None`` → unbounded).
+        """
     @staticmethod
     def with_api_key_and_base_url(
-        provider: str, api_key: str, base_url: str
+        provider: str,
+        api_key: str,
+        base_url: str,
+        *,
+        connect_timeout_seconds: float | None = ...,
+        read_timeout_seconds: float | None = ...,
+        timeout_seconds: float | None = ...,
     ) -> Client: ...
     @staticmethod
-    def with_base_url(provider: str, base_url: str) -> Client: ...
+    def with_base_url(
+        provider: str,
+        base_url: str,
+        *,
+        connect_timeout_seconds: float | None = ...,
+        read_timeout_seconds: float | None = ...,
+        timeout_seconds: float | None = ...,
+    ) -> Client: ...
     def chat(
         self,
         model: str,
