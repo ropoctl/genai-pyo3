@@ -1,6 +1,6 @@
 [package]
 name = "genai-pyo3"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
@@ -11,11 +11,21 @@ name = "_genai_pyo3"
 crate-type = ["cdylib"]
 
 [dependencies]
-# Using the ropoctl fork for `with_default_adapter_kind` support (see
-# rust-genai fork branch feat/default-adapter-kind; PR pending upstream
-# against jeremychone/rust-genai). Flip back to the upstream repo once
-# the feature lands there.
-genai = { git = "https://github.com/ropoctl/rust-genai", rev = "cf10349c1736be276c0935042e7fc99ba91981a5" }
+# Using the ropoctl fork's `integration/clearwing` branch. That branch
+# is upstream `main` plus two pending PRs, each a single clean commit:
+#   * `feat/default-adapter-kind` — adds
+#     `ClientBuilder::with_default_adapter_kind` so custom base_urls
+#     don't silently fall through to the Ollama adapter.
+#   * `fix/capture-reasoning-without-effort` — emit the
+#     `reasoning.summary="detailed"` opt-in on OpenAI Responses when
+#     `capture_reasoning_content(true)` is set, independent of whether
+#     `reasoning_effort` was also passed. Upstream previously gated
+#     both together, silently defeating reasoning capture for callers
+#     who only asked for the summary.
+# Each feature lives on its own single-commit branch for clean upstream
+# PRs; this integration branch is the combined artifact clearwing
+# builds against. Flip back to upstream once both land there.
+genai = { git = "https://github.com/ropoctl/rust-genai", rev = "91d847568a47a837e4c2de8661bda14e3d6946c2" }
 pyo3 = { version = "0.28", features = ["extension-module"] }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

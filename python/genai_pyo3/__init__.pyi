@@ -85,6 +85,7 @@ class ChatOptionsDict(TypedDict, total=False):
     normalize_reasoning_content: bool | None
     seed: int | None
     extra_headers: dict[str, str] | None
+    reasoning_effort: str | None
 
 # ---------------------------------------------------------------------------
 # Rust-backed pyclasses
@@ -160,6 +161,12 @@ class ChatOptions:
     normalize_reasoning_content: bool | None
     seed: int | None
     extra_headers: dict[str, str] | None
+    #: Reasoning effort hint. Accepted: "none" | "minimal" | "low" |
+    #: "medium" | "high" | "xhigh" | "max" | "budget:<n>". When set
+    #: alongside `capture_reasoning_content=True`, the OpenAI Responses
+    #: adapter opts into `reasoning.summary="detailed"` — required
+    #: to get summaries back from the API.
+    reasoning_effort: str | None
 
     def __new__(cls) -> ChatOptions: ...
 

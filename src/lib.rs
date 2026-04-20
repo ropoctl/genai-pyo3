@@ -2,7 +2,7 @@ use futures::StreamExt;
 use genai::adapter::AdapterKind;
 use genai::chat::{
     ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat, ChatRole, ChatStream,
-    ChatStreamEvent, JsonSpec, StreamEnd, Tool, ToolCall, ToolResponse, Usage,
+    ChatStreamEvent, JsonSpec, ReasoningEffort, StreamEnd, Tool, ToolCall, ToolResponse, Usage,
 };
 use genai::resolver::{AuthData, AuthResolver, Endpoint, ServiceTargetResolver};
 use pyo3::exceptions::{PyRuntimeError, PyStopAsyncIteration, PyValueError};
@@ -196,6 +196,14 @@ struct PyChatOptions {
     seed: Option<u64>,
     #[pyo3(get, set)]
     extra_headers: Option<HashMap<String, String>>,
+    /// Reasoning effort hint — tells the provider to produce a
+    /// reasoning trace. Accepted values: "none", "minimal", "low",
+    /// "medium", "high", "xhigh", "max", or "budget:<n>" (token
+    /// budget). Without this, capture_reasoning_content=True only
+    /// captures reasoning the provider volunteers on its own, which
+    /// on OpenAI Responses is typically empty.
+    #[pyo3(get, set)]
+    reasoning_effort: Option<String>,
 }
 
 #[pymethods]
@@ -216,6 +224,7 @@ impl PyChatOptions {
 			normalize_reasoning_content = None,
 			seed = None,
             extra_headers = None,
+            reasoning_effort = None,
 		))]
     fn new(
         temperature: Option<f64>,
@@ -232,6 +241,7 @@ impl PyChatOptions {
         normalize_reasoning_content: Option<bool>,
         seed: Option<u64>,
         extra_headers: Option<HashMap<String, String>>,
+        reasoning_effort: Option<String>,
     ) -> Self {
         Self {
             temperature,
@@ -248,6 +258,7 @@ impl PyChatOptions {
             normalize_reasoning_content,
             seed,
             extra_headers,
+            reasoning_effort,
         }
     }
 }
@@ -1258,8 +1269,36 @@ impl From<PyChatOptions> for ChatOptions {
             normalize_reasoning_content: options.normalize_reasoning_content,
             seed: options.seed,
             extra_headers: options.extra_headers.map(Into::into),
+            reasoning_effort: options
+                .reasoning_effort
+                .as_deref()
+                .and_then(parse_reasoning_effort),
             ..Default::default()
         }
+    }
+}
+
+/// Parse a case-insensitive effort keyword into a `ReasoningEffort`.
+///
+/// Accepted: "none", "minimal", "low", "medium", "high", "xhigh",
+/// "max", or "budget:<n>" where `<n>` is a non-negative u32 token
+/// budget. Returns `None` for unrecognized values so callers get a
+/// silent no-op rather than a hard error — matches the rest of
+/// ChatOptions' "everything is optional" pattern.
+fn parse_reasoning_effort(raw: &str) -> Option<ReasoningEffort> {
+    let trimmed = raw.trim().to_ascii_lowercase();
+    if let Some(budget) = trimmed.strip_prefix("budget:") {
+        return budget.trim().parse::<u32>().ok().map(ReasoningEffort::Budget);
+    }
+    match trimmed.as_str() {
+        "none" => Some(ReasoningEffort::None),
+        "minimal" => Some(ReasoningEffort::Minimal),
+        "low" => Some(ReasoningEffort::Low),
+        "medium" => Some(ReasoningEffort::Medium),
+        "high" => Some(ReasoningEffort::High),
+        "xhigh" => Some(ReasoningEffort::XHigh),
+        "max" => Some(ReasoningEffort::Max),
+        _ => None,
     }
 }
 
