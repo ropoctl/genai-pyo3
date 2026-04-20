@@ -27,7 +27,7 @@ crate-type = ["cdylib"]
 # Each feature lives on its own single-commit branch for clean upstream
 # PRs; this integration branch is the combined artifact clearwing
 # builds against. Flip back to upstream once both land there.
-genai = { git = "https://github.com/ropoctl/rust-genai", rev = "bf136015ebd8cd4659d4f70870d68a94ba701f0f" }
+genai = { git = "https://github.com/ropoctl/rust-genai", rev = "a4fb12174d6c0ecec4089570e2652669857b4b9e" }
 pyo3 = { version = "0.28", features = ["extension-module"] }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
