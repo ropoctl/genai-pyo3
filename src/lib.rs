@@ -9,6 +9,7 @@ use pyo3::exceptions::{PyRuntimeError, PyStopAsyncIteration, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use pythonize::depythonize;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,13 +23,18 @@ use tokio::sync::Mutex;
 /// ``connect_timeout_seconds=None`` explicitly to disable it.
 const DEFAULT_CONNECT_TIMEOUT_SECONDS: f64 = 30.0;
 
-fn web_config_from_timeouts(
+fn web_config_from_overrides(
     connect_timeout_seconds: Option<f64>,
     read_timeout_seconds: Option<f64>,
     timeout_seconds: Option<f64>,
-) -> Option<genai::WebConfig> {
-    if connect_timeout_seconds.is_none() && read_timeout_seconds.is_none() && timeout_seconds.is_none() {
-        return None;
+    default_headers: Option<HashMap<String, String>>,
+) -> PyResult<Option<genai::WebConfig>> {
+    if connect_timeout_seconds.is_none()
+        && read_timeout_seconds.is_none()
+        && timeout_seconds.is_none()
+        && default_headers.as_ref().map_or(true, |h| h.is_empty())
+    {
+        return Ok(None);
     }
     let mut web_config = genai::WebConfig::default();
     if let Some(secs) = connect_timeout_seconds {
@@ -40,7 +46,26 @@ fn web_config_from_timeouts(
     if let Some(secs) = timeout_seconds {
         web_config = web_config.with_timeout(Duration::from_secs_f64(secs));
     }
-    Some(web_config)
+    if let Some(headers) = default_headers
+        && !headers.is_empty()
+    {
+        web_config = web_config.with_default_headers(build_header_map(&headers)?);
+    }
+    Ok(Some(web_config))
+}
+
+fn build_header_map(headers: &HashMap<String, String>) -> PyResult<HeaderMap> {
+    let mut map = HeaderMap::with_capacity(headers.len());
+    for (name, value) in headers {
+        let header_name = HeaderName::from_bytes(name.as_bytes()).map_err(|err| {
+            PyValueError::new_err(format!("invalid header name {name:?}: {err}"))
+        })?;
+        let header_value = HeaderValue::from_str(value).map_err(|err| {
+            PyValueError::new_err(format!("invalid header value for {name:?}: {err}"))
+        })?;
+        map.insert(header_name, header_value);
+    }
+    Ok(map)
 }
 
 /// Python-facing wrapper around `genai::Client`.
@@ -662,6 +687,7 @@ impl PyClient {
         connect_timeout_seconds = DEFAULT_CONNECT_TIMEOUT_SECONDS,
         read_timeout_seconds = None,
         timeout_seconds = None,
+        default_headers = None,
     ))]
     fn with_api_key(
         provider: String,
@@ -669,6 +695,7 @@ impl PyClient {
         connect_timeout_seconds: Option<f64>,
         read_timeout_seconds: Option<f64>,
         timeout_seconds: Option<f64>,
+        default_headers: Option<HashMap<String, String>>,
     ) -> PyResult<Self> {
         build_client_with_overrides(
             provider,
@@ -677,6 +704,7 @@ impl PyClient {
             connect_timeout_seconds,
             read_timeout_seconds,
             timeout_seconds,
+            default_headers,
         )
     }
 
@@ -689,6 +717,7 @@ impl PyClient {
         connect_timeout_seconds = DEFAULT_CONNECT_TIMEOUT_SECONDS,
         read_timeout_seconds = None,
         timeout_seconds = None,
+        default_headers = None,
     ))]
     fn with_api_key_and_base_url(
         provider: String,
@@ -697,6 +726,7 @@ impl PyClient {
         connect_timeout_seconds: Option<f64>,
         read_timeout_seconds: Option<f64>,
         timeout_seconds: Option<f64>,
+        default_headers: Option<HashMap<String, String>>,
     ) -> PyResult<Self> {
         build_client_with_overrides(
             provider,
@@ -705,6 +735,7 @@ impl PyClient {
             connect_timeout_seconds,
             read_timeout_seconds,
             timeout_seconds,
+            default_headers,
         )
     }
 
@@ -716,6 +747,7 @@ impl PyClient {
         connect_timeout_seconds = DEFAULT_CONNECT_TIMEOUT_SECONDS,
         read_timeout_seconds = None,
         timeout_seconds = None,
+        default_headers = None,
     ))]
     fn with_base_url(
         provider: String,
@@ -723,6 +755,7 @@ impl PyClient {
         connect_timeout_seconds: Option<f64>,
         read_timeout_seconds: Option<f64>,
         timeout_seconds: Option<f64>,
+        default_headers: Option<HashMap<String, String>>,
     ) -> PyResult<Self> {
         build_client_with_overrides(
             provider,
@@ -731,6 +764,7 @@ impl PyClient {
             connect_timeout_seconds,
             read_timeout_seconds,
             timeout_seconds,
+            default_headers,
         )
     }
 
@@ -1430,6 +1464,7 @@ fn build_client_with_overrides(
     connect_timeout_seconds: Option<f64>,
     read_timeout_seconds: Option<f64>,
     timeout_seconds: Option<f64>,
+    default_headers: Option<HashMap<String, String>>,
 ) -> PyResult<PyClient> {
     let adapter_kind = parse_adapter_kind(&provider)?;
     // Bind the Client to the adapter up front. rust-genai's
@@ -1440,9 +1475,12 @@ fn build_client_with_overrides(
     // `Error::AdapterKindMismatch` from the Rust side.
     let mut builder = genai::Client::builder().with_adapter_kind(adapter_kind);
 
-    if let Some(web_config) =
-        web_config_from_timeouts(connect_timeout_seconds, read_timeout_seconds, timeout_seconds)
-    {
+    if let Some(web_config) = web_config_from_overrides(
+        connect_timeout_seconds,
+        read_timeout_seconds,
+        timeout_seconds,
+        default_headers,
+    )? {
         builder = builder.with_web_config(web_config);
     }
 

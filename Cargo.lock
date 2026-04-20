@@ -497,13 +497,14 @@ dependencies = [
 
 [[package]]
 name = "genai-pyo3"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "futures",
  "genai",
  "pyo3",
  "pyo3-async-runtimes",
  "pythonize",
+ "reqwest",
  "serde_json",
  "tokio",
 ]

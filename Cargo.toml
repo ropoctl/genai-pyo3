@@ -1,6 +1,6 @@
 [package]
 name = "genai-pyo3"
-version = "0.1.15"
+version = "0.1.16"
 edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
@@ -34,3 +34,9 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 futures = "0.3"
 serde_json = "1"
 pythonize = "0.28"
+# We need `reqwest::header::{HeaderMap, HeaderName, HeaderValue}` to hand
+# custom default headers through to rust-genai's `WebConfig`. rust-genai
+# already depends on reqwest 0.13 with "json", "stream", "gzip"; we take
+# it here with `default-features = false` since we only use its header
+# types, and the shared version resolves to the same compiled crate.
+reqwest = { version = "0.13", default-features = false }
