@@ -43,6 +43,15 @@ fn web_config_from_timeouts(
     Some(web_config)
 }
 
+/// Python-facing wrapper around `genai::Client`.
+///
+/// A `Client` built via `with_api_key` / `with_base_url` /
+/// `with_api_key_and_base_url` is bound to a single provider at
+/// construction time — rust-genai's `ClientBuilder::with_adapter_kind`
+/// drives routing directly from that binding, so callers hand bare
+/// model names to `chat`, `achat`, and friends. The zero-arg
+/// `Client()` path leaves routing unbound and falls back to
+/// rust-genai's model-name prefix inference.
 #[pyclass(name = "Client")]
 struct PyClient {
     inner: genai::Client,
@@ -1408,14 +1417,13 @@ fn build_client_with_overrides(
     timeout_seconds: Option<f64>,
 ) -> PyResult<PyClient> {
     let adapter_kind = parse_adapter_kind(&provider)?;
-    // Pin the default adapter kind so unrecognized model names (e.g.
-    // provider-specific names like `MiniMax-M2.7` or a locally-served
-    // model) route through the caller's chosen provider instead of
-    // falling through to `AdapterKind::from_model`'s Ollama fallback,
-    // which would cause the resolver gates below to miss and the
-    // base_url / api_key overrides to be silently skipped. Explicit
-    // namespacing (`openai::Foo-Bar`) still takes precedence.
-    let mut builder = genai::Client::builder().with_default_adapter_kind(adapter_kind);
+    // Bind the Client to the adapter up front. rust-genai's
+    // `with_adapter_kind` drives routing directly from this, so every
+    // `exec_chat` call hands a bare model name through without any
+    // `"{provider}::{model}"` trickery on the Python side. Mismatched
+    // namespaces in the caller's model string surface as
+    // `Error::AdapterKindMismatch` from the Rust side.
+    let mut builder = genai::Client::builder().with_adapter_kind(adapter_kind);
 
     if let Some(web_config) =
         web_config_from_timeouts(connect_timeout_seconds, read_timeout_seconds, timeout_seconds)
@@ -1446,9 +1454,7 @@ fn build_client_with_overrides(
         builder = builder.with_service_target_resolver(service_target_resolver);
     }
 
-    Ok(PyClient {
-        inner: builder.build(),
-    })
+    Ok(PyClient { inner: builder.build() })
 }
 
 fn to_runtime_error(error: genai::Error) -> PyErr {
