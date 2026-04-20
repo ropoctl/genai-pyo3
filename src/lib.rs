@@ -55,6 +55,13 @@ fn web_config_from_timeouts(
 #[pyclass(name = "Client")]
 struct PyClient {
     inner: genai::Client,
+    /// Canonical provider string the Client was built with
+    /// (`"openai"`, `"openai_resp"`, `"anthropic"`, …), or `None`
+    /// for a zero-arg unbound `Client()`. Exposed as a read-only
+    /// `.provider` attribute so callers can introspect a Client
+    /// without keeping parallel state alongside it.
+    #[pyo3(get)]
+    provider: Option<String>,
 }
 
 #[pyclass(name = "ChatMessage", from_py_object)]
@@ -636,6 +643,14 @@ impl PyClient {
     fn new() -> Self {
         Self {
             inner: genai::Client::default(),
+            provider: None,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        match &self.provider {
+            Some(provider) => format!("Client(provider={provider:?})"),
+            None => "Client(unbound)".to_string(),
         }
     }
 
@@ -1454,7 +1469,10 @@ fn build_client_with_overrides(
         builder = builder.with_service_target_resolver(service_target_resolver);
     }
 
-    Ok(PyClient { inner: builder.build() })
+    Ok(PyClient {
+        inner: builder.build(),
+        provider: Some(provider),
+    })
 }
 
 fn to_runtime_error(error: genai::Error) -> PyErr {
