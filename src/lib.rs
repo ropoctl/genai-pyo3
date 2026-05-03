@@ -5,6 +5,7 @@ use genai::chat::{
     ChatStreamEvent, JsonSpec, ReasoningEffort, StreamEnd, Tool, ToolCall, ToolResponse, Usage,
 };
 use genai::resolver::{AuthData, AuthResolver, Endpoint, ServiceTargetResolver};
+use genai::Headers;
 use pyo3::exceptions::{PyRuntimeError, PyStopAsyncIteration, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -768,6 +769,15 @@ impl PyClient {
         )
     }
 
+    #[staticmethod]
+    fn with_request_override(
+        provider: String,
+        url: String,
+        headers: HashMap<String, String>,
+    ) -> PyResult<Self> {
+        build_client_with_request_override(provider, url, headers)
+    }
+
     #[pyo3(signature = (model, request, options = None))]
     fn chat<'py>(
         &self,
@@ -1509,6 +1519,38 @@ fn build_client_with_overrides(
 
     Ok(PyClient {
         inner: builder.build(),
+        provider: Some(provider),
+    })
+}
+
+fn build_client_with_request_override(
+    provider: String,
+    url: String,
+    headers: HashMap<String, String>,
+) -> PyResult<PyClient> {
+    let adapter_kind = parse_adapter_kind(&provider)?;
+    let url = url.trim().to_string();
+    if url.is_empty() {
+        return Err(PyValueError::new_err("request override url cannot be empty"));
+    }
+
+    let headers = Headers::from(headers.into_iter().collect::<Vec<_>>());
+    let auth_resolver = AuthResolver::from_resolver_fn(move |model_iden: genai::ModelIden| {
+        if model_iden.adapter_kind == adapter_kind {
+            Ok(Some(AuthData::RequestOverride {
+                url: url.clone(),
+                headers: headers.clone(),
+            }))
+        } else {
+            Ok(None)
+        }
+    });
+
+    Ok(PyClient {
+        inner: genai::Client::builder()
+            .with_adapter_kind(adapter_kind)
+            .with_auth_resolver(auth_resolver)
+            .build(),
         provider: Some(provider),
     })
 }

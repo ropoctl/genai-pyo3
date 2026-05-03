@@ -306,6 +306,12 @@ class Client:
         read_timeout_seconds: float | None = ...,
         timeout_seconds: float | None = ...,
     ) -> Client: ...
+    @staticmethod
+    def with_request_override(
+        provider: str,
+        url: str,
+        headers: dict[str, str],
+    ) -> Client: ...
     def chat(
         self,
         model: str,
