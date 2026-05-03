@@ -203,11 +203,10 @@ class Usage:
     def to_dict(self) -> dict[str, Any]: ...
 
 class ChatResponse:
-    """Isomorphic to ``genai::chat::ChatResponse``.
+    """Pythonic wrapper for ``genai::chat::ChatResponse``.
 
-    ``content`` is the single source of truth. ``first_text()``, ``texts()``,
-    and ``tool_calls()`` are derived views, matching rust-genai's getter
-    method names and semantics.
+    ``content`` is the single source of truth. ``text``, ``first_text``,
+    ``texts``, and ``tool_calls`` are read-only derived properties.
     """
 
     def __new__(
@@ -229,16 +228,22 @@ class ChatResponse:
     provider_model_name: str
     usage: Usage
 
+    @property
+    def text(self) -> str | None: ...
+    @property
     def first_text(self) -> str | None: ...
+    @property
     def texts(self) -> list[str]: ...
+    @property
     def tool_calls(self) -> list[ToolCall]: ...
     def to_dict(self) -> dict[str, Any]: ...
 
 class StreamEnd:
-    """Isomorphic to ``genai::chat::StreamEnd``.
+    """Pythonic wrapper for ``genai::chat::StreamEnd``.
 
-    ``captured_content`` is the single source of truth. ``captured_first_text``,
-    ``captured_texts``, and ``captured_tool_calls`` are derived views.
+    ``captured_content`` is the single source of truth. ``captured_text``,
+    ``captured_first_text``, ``captured_texts``, and ``captured_tool_calls``
+    are read-only derived properties.
     """
 
     @property
@@ -246,8 +251,13 @@ class StreamEnd:
     captured_reasoning_content: str | None
     captured_usage: Usage | None
 
+    @property
+    def captured_text(self) -> str | None: ...
+    @property
     def captured_first_text(self) -> str | None: ...
+    @property
     def captured_texts(self) -> list[str]: ...
+    @property
     def captured_tool_calls(self) -> list[ToolCall]: ...
     def to_dict(self) -> dict[str, Any]: ...
 

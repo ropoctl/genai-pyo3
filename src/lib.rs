@@ -1,11 +1,11 @@
 use futures::StreamExt;
+use genai::Headers;
 use genai::adapter::AdapterKind;
 use genai::chat::{
     ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat, ChatRole, ChatStream,
     ChatStreamEvent, JsonSpec, ReasoningEffort, StreamEnd, Tool, ToolCall, ToolResponse, Usage,
 };
 use genai::resolver::{AuthData, AuthResolver, Endpoint, ServiceTargetResolver};
-use genai::Headers;
 use pyo3::exceptions::{PyRuntimeError, PyStopAsyncIteration, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -58,9 +58,8 @@ fn web_config_from_overrides(
 fn build_header_map(headers: &HashMap<String, String>) -> PyResult<HeaderMap> {
     let mut map = HeaderMap::with_capacity(headers.len());
     for (name, value) in headers {
-        let header_name = HeaderName::from_bytes(name.as_bytes()).map_err(|err| {
-            PyValueError::new_err(format!("invalid header name {name:?}: {err}"))
-        })?;
+        let header_name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|err| PyValueError::new_err(format!("invalid header name {name:?}: {err}")))?;
         let header_value = HeaderValue::from_str(value).map_err(|err| {
             PyValueError::new_err(format!("invalid header value for {name:?}: {err}"))
         })?;
@@ -427,15 +426,11 @@ impl PyUsage {
 }
 
 #[pyclass(name = "ChatResponse", from_py_object)]
-/// Isomorphic to rust-genai's `ChatResponse`:
+/// Pythonic wrapper for rust-genai's `ChatResponse`:
 ///   - `content` is the single source of truth (list of lowercase-keyed
 ///     content-part dicts).
-///   - `first_text()`, `texts()`, `tool_calls()` are derived views.
-///
-/// This mirrors rust-genai's `ChatResponse.first_text()/texts()/tool_calls()`
-/// getter methods rather than flattening them into independently-mutable
-/// fields (which was the old PyChatResponse shape and required callers to
-/// coalesce `text or "\n".join(texts)` themselves).
+///   - `text`, `first_text`, `texts`, and `tool_calls` are read-only derived
+///     properties.
 #[derive(Clone)]
 struct PyChatResponse {
     inner_content: genai::chat::MessageContent,
@@ -508,11 +503,19 @@ impl PyChatResponse {
     }
 
     /// Return the first text segment in the response content, if any.
-    fn first_text(&self) -> Option<String> {
+    #[getter]
+    fn text(&self) -> Option<String> {
         self.inner_content.first_text().map(str::to_string)
     }
 
+    /// Alias for ``text`` with rust-genai's explicit naming.
+    #[getter]
+    fn first_text(&self) -> Option<String> {
+        self.text()
+    }
+
     /// Return every text segment in the response content, in order.
+    #[getter]
     fn texts(&self) -> Vec<String> {
         self.inner_content
             .texts()
@@ -522,6 +525,7 @@ impl PyChatResponse {
     }
 
     /// Return every tool call in the response content, in order.
+    #[getter]
     fn tool_calls(&self) -> PyResult<Vec<PyToolCall>> {
         self.inner_content
             .tool_calls()
@@ -533,6 +537,16 @@ impl PyChatResponse {
     fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let dict = PyDict::new(py);
         dict.set_item("content", self.content(py)?)?;
+        match self.text() {
+            Some(text) => dict.set_item("text", text)?,
+            None => dict.set_item("text", py.None())?,
+        }
+        match self.first_text() {
+            Some(text) => dict.set_item("first_text", text)?,
+            None => dict.set_item("first_text", py.None())?,
+        }
+        dict.set_item("texts", self.texts())?;
+        dict.set_item("tool_calls", py_tool_calls_to_py(py, &self.tool_calls()?)?)?;
         match &self.reasoning_content {
             Some(reasoning) => dict.set_item("reasoning_content", reasoning.clone())?,
             None => dict.set_item("reasoning_content", py.None())?,
@@ -550,8 +564,9 @@ impl PyChatResponse {
 }
 
 #[pyclass(name = "StreamEnd", from_py_object)]
-/// Isomorphic to rust-genai's `StreamEnd`: one source of truth
-/// (`captured_content: Option<MessageContent>`) plus derived view methods.
+/// Pythonic wrapper for rust-genai's `StreamEnd`: one source of truth
+/// (`captured_content: Option<MessageContent>`) plus read-only derived
+/// properties.
 #[derive(Clone)]
 struct PyStreamEnd {
     captured_content: Option<genai::chat::MessageContent>,
@@ -578,12 +593,19 @@ impl PyStreamEnd {
             .map_err(|err| PyRuntimeError::new_err(format!("pythonize content: {err}")))
     }
 
-    fn captured_first_text(&self) -> Option<String> {
+    #[getter]
+    fn captured_text(&self) -> Option<String> {
         self.captured_content
             .as_ref()
             .and_then(|c| c.first_text().map(str::to_string))
     }
 
+    #[getter]
+    fn captured_first_text(&self) -> Option<String> {
+        self.captured_text()
+    }
+
+    #[getter]
     fn captured_texts(&self) -> Vec<String> {
         self.captured_content
             .as_ref()
@@ -591,16 +613,34 @@ impl PyStreamEnd {
             .unwrap_or_default()
     }
 
+    #[getter]
     fn captured_tool_calls(&self) -> PyResult<Vec<PyToolCall>> {
         let Some(content) = self.captured_content.as_ref() else {
             return Ok(Vec::new());
         };
-        content.tool_calls().into_iter().map(to_py_tool_call).collect()
+        content
+            .tool_calls()
+            .into_iter()
+            .map(to_py_tool_call)
+            .collect()
     }
 
     fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let dict = PyDict::new(py);
         dict.set_item("captured_content", self.captured_content(py)?)?;
+        match self.captured_text() {
+            Some(text) => dict.set_item("captured_text", text)?,
+            None => dict.set_item("captured_text", py.None())?,
+        }
+        match self.captured_first_text() {
+            Some(text) => dict.set_item("captured_first_text", text)?,
+            None => dict.set_item("captured_first_text", py.None())?,
+        }
+        dict.set_item("captured_texts", self.captured_texts())?;
+        dict.set_item(
+            "captured_tool_calls",
+            py_tool_calls_to_py(py, &self.captured_tool_calls()?)?,
+        )?;
         match &self.captured_usage {
             Some(usage) => dict.set_item("captured_usage", usage.to_dict(py)?)?,
             None => dict.set_item("captured_usage", py.None())?,
@@ -1150,10 +1190,16 @@ fn title_case_content_part(s: &str) -> Option<&'static str> {
 /// know are left untouched (forward-compat with upstream rust-genai adding
 /// new parts).
 fn lowercase_content_part_keys(value: &mut serde_json::Value) {
-    let Some(parts) = value.as_array_mut() else { return };
+    let Some(parts) = value.as_array_mut() else {
+        return;
+    };
     for part in parts {
-        let Some(obj) = part.as_object_mut() else { continue };
-        let Some(title_key) = obj.keys().next().cloned() else { continue };
+        let Some(obj) = part.as_object_mut() else {
+            continue;
+        };
+        let Some(title_key) = obj.keys().next().cloned() else {
+            continue;
+        };
         let lower = match title_key.as_str() {
             "Text" => "text",
             "Binary" => "binary",
@@ -1173,14 +1219,13 @@ fn lowercase_content_part_keys(value: &mut serde_json::Value) {
 /// ValueError — rust-genai's enum names are an implementation detail; the
 /// dict shape is documented lowercase-only.
 fn normalize_chat_request_value(value: &mut serde_json::Value) -> PyResult<()> {
-    let Some(messages) = value
-        .get_mut("messages")
-        .and_then(|v| v.as_array_mut())
-    else {
+    let Some(messages) = value.get_mut("messages").and_then(|v| v.as_array_mut()) else {
         return Ok(());
     };
     for (msg_idx, msg) in messages.iter_mut().enumerate() {
-        let Some(obj) = msg.as_object_mut() else { continue };
+        let Some(obj) = msg.as_object_mut() else {
+            continue;
+        };
         if let Some(role_value) = obj.get("role") {
             if let Some(role_str) = role_value.as_str() {
                 let title = title_case_role(role_str).ok_or_else(|| {
@@ -1192,7 +1237,9 @@ fn normalize_chat_request_value(value: &mut serde_json::Value) -> PyResult<()> {
                 obj.insert("role".to_string(), serde_json::Value::String(title.into()));
             }
         }
-        let Some(parts) = obj.get_mut("content").and_then(|v| v.as_array_mut()) else { continue };
+        let Some(parts) = obj.get_mut("content").and_then(|v| v.as_array_mut()) else {
+            continue;
+        };
         normalize_content_parts(parts, &format!("messages[{msg_idx}].content"))?;
     }
     Ok(())
@@ -1206,7 +1253,9 @@ fn normalize_chat_request_value(value: &mut serde_json::Value) -> PyResult<()> {
 /// input.
 fn normalize_content_parts(parts: &mut [serde_json::Value], path: &str) -> PyResult<()> {
     for (part_idx, part) in parts.iter_mut().enumerate() {
-        let Some(part_obj) = part.as_object_mut() else { continue };
+        let Some(part_obj) = part.as_object_mut() else {
+            continue;
+        };
         if part_obj.len() != 1 {
             return Err(PyValueError::new_err(format!(
                 "{path}[{part_idx}]: expected a single-key dict ({:?}), got {} keys",
@@ -1230,7 +1279,9 @@ fn normalize_content_parts(parts: &mut [serde_json::Value], path: &str) -> PyRes
 /// Depythonize a Python object (or None) into a ``MessageContent``. Accepts
 /// the same lowercase-keyed content-part dict form the client emits.
 fn coerce_message_content(obj: Option<Bound<'_, PyAny>>) -> PyResult<genai::chat::MessageContent> {
-    let Some(obj) = obj else { return Ok(genai::chat::MessageContent::default()) };
+    let Some(obj) = obj else {
+        return Ok(genai::chat::MessageContent::default());
+    };
     if obj.is_none() {
         return Ok(genai::chat::MessageContent::default());
     }
@@ -1239,13 +1290,12 @@ fn coerce_message_content(obj: Option<Bound<'_, PyAny>>) -> PyResult<genai::chat
             "content must be a list of content-part dicts: {err}"
         ))
     })?;
-    let parts = value.as_array_mut().ok_or_else(|| {
-        PyValueError::new_err("content must be a list of content-part dicts")
-    })?;
+    let parts = value
+        .as_array_mut()
+        .ok_or_else(|| PyValueError::new_err("content must be a list of content-part dicts"))?;
     normalize_content_parts(parts, "content")?;
-    serde_json::from_value(value).map_err(|err| {
-        PyValueError::new_err(format!("content list does not match schema: {err}"))
-    })
+    serde_json::from_value(value)
+        .map_err(|err| PyValueError::new_err(format!("content list does not match schema: {err}")))
 }
 
 /// Accept an optional `PyChatOptions` pyclass or a JSON-compatible dict.
@@ -1262,11 +1312,9 @@ fn coerce_chat_options(obj: Option<Bound<'_, PyAny>>) -> PyResult<Option<ChatOpt
             "chat options must be a ChatOptions or a JSON-compatible dict: {err}"
         ))
     })?;
-    serde_json::from_value(value)
-        .map(Some)
-        .map_err(|err| {
-            PyValueError::new_err(format!("chat options dict does not match schema: {err}"))
-        })
+    serde_json::from_value(value).map(Some).map_err(|err| {
+        PyValueError::new_err(format!("chat options dict does not match schema: {err}"))
+    })
 }
 
 impl TryFrom<PyChatRequest> for ChatRequest {
@@ -1356,7 +1404,11 @@ impl From<PyChatOptions> for ChatOptions {
 fn parse_reasoning_effort(raw: &str) -> Option<ReasoningEffort> {
     let trimmed = raw.trim().to_ascii_lowercase();
     if let Some(budget) = trimmed.strip_prefix("budget:") {
-        return budget.trim().parse::<u32>().ok().map(ReasoningEffort::Budget);
+        return budget
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .map(ReasoningEffort::Budget);
     }
     match trimmed.as_str() {
         "none" => Some(ReasoningEffort::None),
@@ -1531,7 +1583,9 @@ fn build_client_with_request_override(
     let adapter_kind = parse_adapter_kind(&provider)?;
     let url = url.trim().to_string();
     if url.is_empty() {
-        return Err(PyValueError::new_err("request override url cannot be empty"));
+        return Err(PyValueError::new_err(
+            "request override url cannot be empty",
+        ));
     }
 
     let headers = Headers::from(headers.into_iter().collect::<Vec<_>>());
