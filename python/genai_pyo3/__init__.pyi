@@ -117,7 +117,7 @@ class Tool:
         cls,
         name: str,
         description: str | None = ...,
-        schema_json: str | None = ...,
+        schema_json: str | dict[str, Any] | None = ...,
     ) -> Tool: ...
 
 class ChatRequest:
@@ -142,7 +142,7 @@ class JsonSpec:
     def __new__(
         cls,
         name: str,
-        schema_json: str,
+        schema_json: str | dict[str, Any],
         description: str | None = ...,
     ) -> JsonSpec: ...
 

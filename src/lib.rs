@@ -188,8 +188,10 @@ struct PyTool {
     name: String,
     #[pyo3(get, set)]
     description: Option<String>,
-    /// JSON Schema string for parameters
-    #[pyo3(get, set)]
+    /// JSON Schema for parameters, stored as a JSON string. Accepts either a
+    /// `str` (used as-is) or any JSON-serializable Python object (typically a
+    /// `dict`, e.g. ``pydantic.BaseModel.model_json_schema()``).
+    #[pyo3(get)]
     schema_json: Option<String>,
 }
 
@@ -197,12 +199,23 @@ struct PyTool {
 impl PyTool {
     #[new]
     #[pyo3(signature = (name, description = None, schema_json = None))]
-    fn new(name: String, description: Option<String>, schema_json: Option<String>) -> Self {
-        Self {
+    fn new(
+        name: String,
+        description: Option<String>,
+        schema_json: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        let schema_json = schema_json.map(coerce_schema_to_json_string).transpose()?;
+        Ok(Self {
             name,
             description,
             schema_json,
-        }
+        })
+    }
+
+    #[setter]
+    fn set_schema_json(&mut self, value: Option<Bound<'_, PyAny>>) -> PyResult<()> {
+        self.schema_json = value.map(coerce_schema_to_json_string).transpose()?;
+        Ok(())
     }
 }
 
@@ -309,7 +322,10 @@ impl PyChatOptions {
 struct PyJsonSpec {
     #[pyo3(get, set)]
     name: String,
-    #[pyo3(get, set)]
+    /// JSON Schema for the response, stored as a JSON string. Accepts either a
+    /// `str` (used as-is) or any JSON-serializable Python object (typically a
+    /// `dict`, e.g. ``pydantic.BaseModel.model_json_schema()``).
+    #[pyo3(get)]
     schema_json: String,
     #[pyo3(get, set)]
     description: Option<String>,
@@ -319,12 +335,23 @@ struct PyJsonSpec {
 impl PyJsonSpec {
     #[new]
     #[pyo3(signature = (name, schema_json, description = None))]
-    fn new(name: String, schema_json: String, description: Option<String>) -> Self {
-        Self {
+    fn new(
+        name: String,
+        schema_json: Bound<'_, PyAny>,
+        description: Option<String>,
+    ) -> PyResult<Self> {
+        let schema_json = coerce_schema_to_json_string(schema_json)?;
+        Ok(Self {
             name,
             schema_json,
             description,
-        }
+        })
+    }
+
+    #[setter]
+    fn set_schema_json(&mut self, value: Bound<'_, PyAny>) -> PyResult<()> {
+        self.schema_json = coerce_schema_to_json_string(value)?;
+        Ok(())
     }
 }
 
@@ -1031,6 +1058,23 @@ fn parse_chat_role(role: &str) -> PyResult<ChatRole> {
             "invalid chat role '{role}'. expected one of: system, user, assistant, tool"
         ))),
     }
+}
+
+/// Coerce a Python value into a JSON Schema string. Accepts either a Python
+/// `str` (used as-is) or any JSON-serializable object (typically a `dict`
+/// such as ``pydantic.BaseModel.model_json_schema()``).
+fn coerce_schema_to_json_string(value: Bound<'_, PyAny>) -> PyResult<String> {
+    if let Ok(s) = value.extract::<String>() {
+        return Ok(s);
+    }
+    let json_value: serde_json::Value = depythonize(&value).map_err(|err| {
+        PyValueError::new_err(format!(
+            "schema must be a JSON string or a JSON-serializable object: {err}"
+        ))
+    })?;
+    serde_json::to_string(&json_value).map_err(|err| {
+        PyValueError::new_err(format!("failed to serialize schema to JSON: {err}"))
+    })
 }
 
 fn json_value_to_py(py: Python<'_>, value: &serde_json::Value) -> PyResult<Py<PyAny>> {
