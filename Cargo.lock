@@ -473,8 +473,8 @@ dependencies = [
 
 [[package]]
 name = "genai"
-version = "0.6.0-beta.17"
-source = "git+https://github.com/ropoctl/rust-genai?rev=a4fb12174d6c0ecec4089570e2652669857b4b9e#a4fb12174d6c0ecec4089570e2652669857b4b9e"
+version = "0.6.0-beta.19"
+source = "git+https://github.com/jeremychone/rust-genai?tag=v0.6.0-beta.19#87005887f7efb4df7478736816253f60f0b423aa"
 dependencies = [
  "base64",
  "bytes",
@@ -482,6 +482,7 @@ dependencies = [
  "eventsource-stream",
  "futures",
  "mime_guess",
+ "paste",
  "regex",
  "reqwest",
  "serde",
@@ -497,7 +498,7 @@ dependencies = [
 
 [[package]]
 name = "genai-pyo3"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "futures",
  "genai",
@@ -1065,6 +1066,12 @@ name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
+
+[[package]]
+name = "paste"
+version = "1.0.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "percent-encoding"

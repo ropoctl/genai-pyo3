@@ -1,6 +1,6 @@
 [package]
 name = "genai-pyo3"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
@@ -11,23 +11,7 @@ name = "_genai_pyo3"
 crate-type = ["cdylib"]
 
 [dependencies]
-# Using the ropoctl fork's `integration/clearwing` branch. That branch
-# is upstream `main` plus two pending PRs, each a single clean commit:
-#   * `feat/bind-client-to-adapter-kind` — adds
-#     `ClientBuilder::with_adapter_kind` so a Client configured with
-#     provider-scoped resolvers is type-bound to that adapter.
-#     Replaces the earlier `feat/default-adapter-kind` proposal after
-#     upstream feedback on naming.
-#   * `fix/capture-reasoning-without-effort` — emit the
-#     `reasoning.summary="detailed"` opt-in on OpenAI Responses when
-#     `capture_reasoning_content(true)` is set, independent of whether
-#     `reasoning_effort` was also passed. Upstream previously gated
-#     both together, silently defeating reasoning capture for callers
-#     who only asked for the summary.
-# Each feature lives on its own single-commit branch for clean upstream
-# PRs; this integration branch is the combined artifact clearwing
-# builds against. Flip back to upstream once both land there.
-genai = { git = "https://github.com/ropoctl/rust-genai", rev = "a4fb12174d6c0ecec4089570e2652669857b4b9e" }
+genai = { git = "https://github.com/jeremychone/rust-genai", tag = "v0.6.0-beta.19" }
 pyo3 = { version = "0.28", features = ["extension-module"] }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
