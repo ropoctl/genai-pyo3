@@ -110,18 +110,34 @@ struct PyChatMessage {
     /// the rest. Unknown values are silently dropped.
     #[pyo3(get, set)]
     cache_control: Option<String>,
+    /// Encrypted reasoning blobs carried back from a prior assistant
+    /// turn (OpenAI Responses `type: "reasoning"` items). When set on an
+    /// assistant message, the openai_resp adapter emits each blob as a
+    /// top-level `{type: "reasoning", encrypted_content: ...}` input
+    /// item before the message it belongs to. Required to keep the
+    /// Responses-API prefix cache warm across turns on reasoning models.
+    #[pyo3(get, set)]
+    thought_signatures: Option<Vec<String>>,
 }
 
 #[pymethods]
 impl PyChatMessage {
     #[new]
-    #[pyo3(signature = (role, content, tool_calls = None, tool_response_call_id = None, cache_control = None))]
+    #[pyo3(signature = (
+        role,
+        content,
+        tool_calls = None,
+        tool_response_call_id = None,
+        cache_control = None,
+        thought_signatures = None,
+    ))]
     fn new(
         role: String,
         content: String,
         tool_calls: Option<Vec<PyToolCall>>,
         tool_response_call_id: Option<String>,
         cache_control: Option<String>,
+        thought_signatures: Option<Vec<String>>,
     ) -> PyResult<Self> {
         validate_role(&role)?;
         Ok(Self {
@@ -130,6 +146,7 @@ impl PyChatMessage {
             tool_calls,
             tool_response_call_id,
             cache_control,
+            thought_signatures,
         })
     }
 
@@ -150,6 +167,10 @@ impl PyChatMessage {
         match &self.cache_control {
             Some(cc) => dict.set_item("cache_control", cc.clone())?,
             None => dict.set_item("cache_control", py.None())?,
+        }
+        match &self.thought_signatures {
+            Some(sigs) => dict.set_item("thought_signatures", sigs.clone())?,
+            None => dict.set_item("thought_signatures", py.None())?,
         }
         Ok(dict.into_any())
     }
@@ -847,6 +868,15 @@ struct PyStreamEnd {
     /// request to chain calls.
     #[pyo3(get)]
     captured_response_id: Option<String>,
+    /// Encrypted reasoning blobs (`type:"reasoning"` items) from the
+    /// streamed response. On OpenAI Responses-API reasoning models these
+    /// must be carried back into the next turn's input — as
+    /// `ChatMessage(thought_signatures=...)` on the assistant turn — to
+    /// keep the prefix cache warm. (Originally Gemini's "thought
+    /// signatures" terminology; rust-genai reuses the same slot for the
+    /// OpenAI encrypted_content blob.)
+    #[pyo3(get)]
+    captured_thought_signatures: Option<Vec<String>>,
 }
 
 #[pymethods]
@@ -925,6 +955,10 @@ impl PyStreamEnd {
         match &self.captured_response_id {
             Some(id) => dict.set_item("captured_response_id", id.clone())?,
             None => dict.set_item("captured_response_id", py.None())?,
+        }
+        match &self.captured_thought_signatures {
+            Some(sigs) => dict.set_item("captured_thought_signatures", sigs.clone())?,
+            None => dict.set_item("captured_thought_signatures", py.None())?,
         }
         Ok(dict.into_any())
     }
@@ -1394,8 +1428,9 @@ impl TryFrom<PyChatMessage> for ChatMessage {
             .as_deref()
             .and_then(parse_cache_control)
             .map(|cc| MessageOptions { cache_control: Some(cc) });
+        let thought_signatures = message.thought_signatures.clone();
 
-        let chat_message = match role {
+        let mut chat_message = match role {
             ChatRole::Assistant if message.tool_calls.is_some() => {
                 // Assistant message with tool calls
                 let py_calls = message.tool_calls.unwrap();
@@ -1429,6 +1464,22 @@ impl TryFrom<PyChatMessage> for ChatMessage {
                 }
             }
         };
+
+        // Attach encrypted reasoning blobs as ThoughtSignature parts so the
+        // openai_resp adapter can emit them as top-level `type: "reasoning"`
+        // input items in the next request. Order: signatures go FIRST in the
+        // content vector so they precede text / tool calls when serialized.
+        if let Some(sigs) = thought_signatures
+            && !sigs.is_empty()
+        {
+            let parts = chat_message.content.parts().clone();
+            let mut new_parts: Vec<genai::chat::ContentPart> = sigs
+                .into_iter()
+                .map(genai::chat::ContentPart::ThoughtSignature)
+                .collect();
+            new_parts.extend(parts);
+            chat_message.content = genai::chat::MessageContent::from_parts(new_parts);
+        }
 
         Ok(match options {
             Some(opts) => chat_message.with_options(opts),
@@ -1824,11 +1875,18 @@ fn to_py_chat_response(
 }
 
 fn to_py_stream_end(end: StreamEnd) -> PyResult<PyStreamEnd> {
+    // Lift encrypted reasoning blobs into their own field so Python callers
+    // can pluck them out without scanning content parts. Rust-genai stores
+    // them as `ContentPart::ThoughtSignature` parts inside `captured_content`.
+    let captured_thought_signatures: Option<Vec<String>> = end
+        .captured_thought_signatures()
+        .map(|v| v.into_iter().map(String::from).collect());
     Ok(PyStreamEnd {
         captured_content: end.captured_content,
         captured_usage: end.captured_usage.as_ref().map(to_py_usage),
         captured_reasoning_content: end.captured_reasoning_content,
         captured_response_id: end.captured_response_id,
+        captured_thought_signatures,
     })
 }
 

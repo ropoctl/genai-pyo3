@@ -101,6 +101,13 @@ class ChatMessage:
     #: to ``cache_control`` at the content-part level. OpenAI maps a
     #: subset to request-level caching and ignores the rest.
     cache_control: str | None
+    #: Encrypted reasoning blobs from a prior assistant turn (OpenAI
+    #: Responses ``type:"reasoning"`` items). When set on an assistant
+    #: message, the ``openai_resp`` adapter emits each blob as a
+    #: top-level ``{type:"reasoning", encrypted_content:...}`` input
+    #: item before the message it belongs to. Required to keep the
+    #: Responses-API prefix cache warm across turns on reasoning models.
+    thought_signatures: list[str] | None
 
     def __new__(
         cls,
@@ -110,6 +117,7 @@ class ChatMessage:
         tool_calls: list[ToolCall] | None = ...,
         tool_response_call_id: str | None = ...,
         cache_control: str | None = ...,
+        thought_signatures: list[str] | None = ...,
     ) -> ChatMessage: ...
     @staticmethod
     def from_python(obj: Any) -> ChatMessage: ...
@@ -329,6 +337,12 @@ class StreamEnd:
     #: the terminal stream event. Feed back as ``previous_response_id``
     #: on the next request to chain calls.
     captured_response_id: str | None
+    #: Encrypted reasoning blobs (``type:"reasoning"`` items) from the
+    #: streamed response. On OpenAI Responses-API reasoning models
+    #: these must be carried back into the next turn's input — as
+    #: ``ChatMessage(thought_signatures=...)`` on the assistant turn —
+    #: to keep the prefix cache warm.
+    captured_thought_signatures: list[str] | None
 
     @property
     def captured_text(self) -> str | None: ...

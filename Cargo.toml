@@ -1,6 +1,6 @@
 [package]
 name = "genai-pyo3"
-version = "0.5.3"
+version = "0.5.4"
 edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
@@ -11,7 +11,11 @@ name = "_genai_pyo3"
 crate-type = ["cdylib"]
 
 [dependencies]
-genai = { git = "https://github.com/jeremychone/rust-genai", tag = "v0.6.0-beta.19" }
+# Pinned to the ropoctl/rust-genai fork commit that carries the
+# openai_resp encrypted-reasoning round-trip (PR jeremychone/rust-genai#227).
+# Once that lands upstream this will move back to the canonical
+# jeremychone/rust-genai tag.
+genai = { git = "https://github.com/ropoctl/rust-genai", rev = "1584abae7888b308aa0aea28eaa92c55651723be" }
 pyo3 = { version = "0.28", features = ["extension-module"] }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

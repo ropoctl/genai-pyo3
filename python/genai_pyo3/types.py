@@ -64,6 +64,7 @@ class ChatMessageDict(TypedDict):
     content: list[ContentPartDict]
     options: NotRequired[Any]
     cache_control: NotRequired[str]
+    thought_signatures: NotRequired[list[str]]
 
 
 class ToolDict(TypedDict):
