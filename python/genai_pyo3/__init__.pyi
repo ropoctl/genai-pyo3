@@ -96,6 +96,11 @@ class ChatMessage:
     content: str
     tool_calls: list[ToolCall] | None
     tool_response_call_id: str | None
+    #: Per-message cache hint: "ephemeral" (default 5m), "ephemeral_5m",
+    #: "ephemeral_1h", "ephemeral_24h", "memory". Anthropic maps these
+    #: to ``cache_control`` at the content-part level. OpenAI maps a
+    #: subset to request-level caching and ignores the rest.
+    cache_control: str | None
 
     def __new__(
         cls,
@@ -104,6 +109,7 @@ class ChatMessage:
         *,
         tool_calls: list[ToolCall] | None = ...,
         tool_response_call_id: str | None = ...,
+        cache_control: str | None = ...,
     ) -> ChatMessage: ...
     @staticmethod
     def from_python(obj: Any) -> ChatMessage: ...
@@ -124,12 +130,21 @@ class ChatRequest:
     system: str | None
     messages: list[ChatMessage]
     tools: list[Tool] | None
+    #: OpenAI Responses API: chain a server-stored prior response so the
+    #: backend only processes the new turn's delta. Set after capturing
+    #: ``ChatResponse.response_id`` from a request that had ``store=True``.
+    previous_response_id: str | None
+    #: OpenAI Responses API: ask the backend to persist this response so
+    #: its ``response_id`` is reusable on a follow-up request.
+    store: bool | None
 
     def __new__(
         cls,
         messages: list[ChatMessage],
         system: str | None = ...,
         tools: list[Tool] | None = ...,
+        previous_response_id: str | None = ...,
+        store: bool | None = ...,
     ) -> ChatRequest: ...
     def add_message(self, message: ChatMessage) -> None: ...
     def message_count(self) -> int: ...
@@ -167,6 +182,10 @@ class ChatOptions:
     #: adapter opts into `reasoning.summary="detailed"` — required
     #: to get summaries back from the API.
     reasoning_effort: str | None
+    #: OpenAI Responses API prefix-cache key. Keep stable across requests
+    #: in a session to maximise cache hits — surfaced as
+    #: ``Usage.prompt_tokens_details.cached_tokens`` on subsequent calls.
+    prompt_cache_key: str | None
 
     def __new__(cls) -> ChatOptions: ...
 
@@ -189,16 +208,67 @@ class ToolCall:
     @staticmethod
     def from_python(obj: Any) -> ToolCall: ...
 
+class CacheCreationDetails:
+    ephemeral_5m_tokens: int | None
+    ephemeral_1h_tokens: int | None
+
+    def __new__(
+        cls,
+        ephemeral_5m_tokens: int | None = ...,
+        ephemeral_1h_tokens: int | None = ...,
+    ) -> CacheCreationDetails: ...
+    def to_dict(self) -> dict[str, Any]: ...
+
+class PromptTokensDetails:
+    #: Tokens written to the cache on this turn. Anthropic
+    #: ``cache_creation_input_tokens``. May incur a surcharge; subsequent
+    #: requests benefit via ``cached_tokens``.
+    cache_creation_tokens: int | None
+    cache_creation_details: CacheCreationDetails | None
+    #: Tokens served from the cache on this turn — the headline number for
+    #: verifying prompt-caching is live (Anthropic
+    #: ``cache_read_input_tokens``, OpenAI ``cached_tokens``).
+    cached_tokens: int | None
+    audio_tokens: int | None
+
+    def __new__(
+        cls,
+        cache_creation_tokens: int | None = ...,
+        cache_creation_details: CacheCreationDetails | None = ...,
+        cached_tokens: int | None = ...,
+        audio_tokens: int | None = ...,
+    ) -> PromptTokensDetails: ...
+    def to_dict(self) -> dict[str, Any]: ...
+
+class CompletionTokensDetails:
+    accepted_prediction_tokens: int | None
+    rejected_prediction_tokens: int | None
+    reasoning_tokens: int | None
+    audio_tokens: int | None
+
+    def __new__(
+        cls,
+        accepted_prediction_tokens: int | None = ...,
+        rejected_prediction_tokens: int | None = ...,
+        reasoning_tokens: int | None = ...,
+        audio_tokens: int | None = ...,
+    ) -> CompletionTokensDetails: ...
+    def to_dict(self) -> dict[str, Any]: ...
+
 class Usage:
     prompt_tokens: int | None
     completion_tokens: int | None
     total_tokens: int | None
+    prompt_tokens_details: PromptTokensDetails | None
+    completion_tokens_details: CompletionTokensDetails | None
 
     def __new__(
         cls,
         prompt_tokens: int | None = ...,
         completion_tokens: int | None = ...,
         total_tokens: int | None = ...,
+        prompt_tokens_details: PromptTokensDetails | None = ...,
+        completion_tokens_details: CompletionTokensDetails | None = ...,
     ) -> Usage: ...
     def to_dict(self) -> dict[str, Any]: ...
 
@@ -218,6 +288,7 @@ class ChatResponse:
         provider_model_adapter_kind: str | None = ...,
         provider_model_name: str | None = ...,
         usage: Usage | None = ...,
+        response_id: str | None = ...,
     ) -> ChatResponse: ...
     @property
     def content(self) -> list[ContentPartDict]: ...
@@ -227,6 +298,10 @@ class ChatResponse:
     provider_model_adapter_kind: str
     provider_model_name: str
     usage: Usage
+    #: OpenAI Responses API: the server-stored response id, present when
+    #: the request was sent with ``store=True``. Feed back as
+    #: ``previous_response_id`` on the next request to chain calls.
+    response_id: str | None
 
     @property
     def text(self) -> str | None: ...
@@ -250,6 +325,10 @@ class StreamEnd:
     def captured_content(self) -> list[ContentPartDict] | None: ...
     captured_reasoning_content: str | None
     captured_usage: Usage | None
+    #: OpenAI Responses API: the server-stored response id captured from
+    #: the terminal stream event. Feed back as ``previous_response_id``
+    #: on the next request to chain calls.
+    captured_response_id: str | None
 
     @property
     def captured_text(self) -> str | None: ...
@@ -348,6 +427,7 @@ class Client:
     ) -> ChatResponse: ...
 
 __all__ = [
+    "CacheCreationDetails",
     "ChatMessage",
     "ChatMessageDict",
     "ChatOptions",
@@ -359,9 +439,11 @@ __all__ = [
     "ChatResponse",
     "ChatStreamEvent",
     "Client",
+    "CompletionTokensDetails",
     "ContentPartDict",
     "JsonSpec",
     "JsonSpecDict",
+    "PromptTokensDetails",
     "Role",
     "StreamEnd",
     "Tool",

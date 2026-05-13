@@ -2,13 +2,16 @@ import json
 from collections.abc import Mapping
 
 from ._genai_pyo3 import (
+    CacheCreationDetails,
     ChatMessage,
     ChatOptions,
     ChatRequest,
     ChatResponse,
     ChatStreamEvent,
     Client,
+    CompletionTokensDetails,
     JsonSpec,
+    PromptTokensDetails,
     StreamEnd,
     Tool,
     ToolCall,
@@ -139,6 +142,7 @@ from .types import (
 )
 
 __all__ = [
+    "CacheCreationDetails",
     "ChatMessage",
     "ChatMessageDict",
     "ChatOptions",
@@ -150,9 +154,11 @@ __all__ = [
     "ChatResponse",
     "ChatStreamEvent",
     "Client",
+    "CompletionTokensDetails",
     "ContentPartDict",
     "JsonSpec",
     "JsonSpecDict",
+    "PromptTokensDetails",
     "Role",
     "StreamEnd",
     "Tool",

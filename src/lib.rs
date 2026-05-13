@@ -2,8 +2,9 @@ use futures::StreamExt;
 use genai::Headers;
 use genai::adapter::AdapterKind;
 use genai::chat::{
-    ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat, ChatRole, ChatStream,
-    ChatStreamEvent, JsonSpec, ReasoningEffort, StreamEnd, Tool, ToolCall, ToolResponse, Usage,
+    CacheControl, CacheCreationDetails, ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat,
+    ChatRole, ChatStream, ChatStreamEvent, CompletionTokensDetails, JsonSpec, MessageOptions,
+    PromptTokensDetails, ReasoningEffort, StreamEnd, Tool, ToolCall, ToolResponse, Usage,
 };
 use genai::resolver::{AuthData, AuthResolver, Endpoint, ServiceTargetResolver};
 use pyo3::exceptions::{PyRuntimeError, PyStopAsyncIteration, PyValueError};
@@ -102,17 +103,25 @@ struct PyChatMessage {
     /// For tool response messages
     #[pyo3(get, set)]
     tool_response_call_id: Option<String>,
+    /// Per-message cache hint. Accepted: "ephemeral", "ephemeral_5m",
+    /// "ephemeral_1h", "ephemeral_24h", "memory". Anthropic applies these
+    /// as `cache_control: {type: ephemeral, ttl: ...}` at the content-part
+    /// level; OpenAI maps a subset to request-level caching and ignores
+    /// the rest. Unknown values are silently dropped.
+    #[pyo3(get, set)]
+    cache_control: Option<String>,
 }
 
 #[pymethods]
 impl PyChatMessage {
     #[new]
-    #[pyo3(signature = (role, content, tool_calls = None, tool_response_call_id = None))]
+    #[pyo3(signature = (role, content, tool_calls = None, tool_response_call_id = None, cache_control = None))]
     fn new(
         role: String,
         content: String,
         tool_calls: Option<Vec<PyToolCall>>,
         tool_response_call_id: Option<String>,
+        cache_control: Option<String>,
     ) -> PyResult<Self> {
         validate_role(&role)?;
         Ok(Self {
@@ -120,6 +129,7 @@ impl PyChatMessage {
             content,
             tool_calls,
             tool_response_call_id,
+            cache_control,
         })
     }
 
@@ -137,6 +147,10 @@ impl PyChatMessage {
             Some(call_id) => dict.set_item("tool_response_call_id", call_id.clone())?,
             None => dict.set_item("tool_response_call_id", py.None())?,
         }
+        match &self.cache_control {
+            Some(cc) => dict.set_item("cache_control", cc.clone())?,
+            None => dict.set_item("cache_control", py.None())?,
+        }
         Ok(dict.into_any())
     }
 }
@@ -150,21 +164,34 @@ struct PyChatRequest {
     messages: Vec<PyChatMessage>,
     #[pyo3(get, set)]
     tools: Option<Vec<PyTool>>,
+    /// OpenAI Responses API: chain a previous server-stored response so the
+    /// backend only needs to process the new turn's delta. Pair with `store=True`
+    /// on the previous request to make its `response_id` reusable here.
+    #[pyo3(get, set)]
+    previous_response_id: Option<String>,
+    /// OpenAI Responses API: ask the backend to persist this response so its
+    /// `response_id` can be used as `previous_response_id` on a follow-up call.
+    #[pyo3(get, set)]
+    store: Option<bool>,
 }
 
 #[pymethods]
 impl PyChatRequest {
     #[new]
-    #[pyo3(signature = (messages, system = None, tools = None))]
+    #[pyo3(signature = (messages, system = None, tools = None, previous_response_id = None, store = None))]
     fn new(
         messages: Vec<PyChatMessage>,
         system: Option<String>,
         tools: Option<Vec<PyTool>>,
+        previous_response_id: Option<String>,
+        store: Option<bool>,
     ) -> Self {
         Self {
             system,
             messages,
             tools,
+            previous_response_id,
+            store,
         }
     }
 
@@ -258,6 +285,13 @@ struct PyChatOptions {
     /// on OpenAI Responses is typically empty.
     #[pyo3(get, set)]
     reasoning_effort: Option<String>,
+    /// OpenAI Responses API prefix-cache key. Holding this constant across
+    /// requests in a session lets the backend recognise the cacheable
+    /// prefix even when its content hashes shift in cheap ways
+    /// (timestamps, formatting). Returned as `cached_tokens` in
+    /// `Usage.prompt_tokens_details`.
+    #[pyo3(get, set)]
+    prompt_cache_key: Option<String>,
 }
 
 #[pymethods]
@@ -279,6 +313,7 @@ impl PyChatOptions {
 			seed = None,
             extra_headers = None,
             reasoning_effort = None,
+            prompt_cache_key = None,
 		))]
     fn new(
         temperature: Option<f64>,
@@ -296,6 +331,7 @@ impl PyChatOptions {
         seed: Option<u64>,
         extra_headers: Option<HashMap<String, String>>,
         reasoning_effort: Option<String>,
+        prompt_cache_key: Option<String>,
     ) -> Self {
         Self {
             temperature,
@@ -313,6 +349,7 @@ impl PyChatOptions {
             seed,
             extra_headers,
             reasoning_effort,
+            prompt_cache_key,
         }
     }
 }
@@ -407,6 +444,169 @@ impl PyToolCall {
     }
 }
 
+#[pyclass(name = "CacheCreationDetails", from_py_object)]
+#[derive(Clone, Default)]
+struct PyCacheCreationDetails {
+    /// Anthropic: tokens written to the 5-minute ephemeral cache on this turn.
+    #[pyo3(get, set)]
+    ephemeral_5m_tokens: Option<i32>,
+    /// Anthropic: tokens written to the 1-hour ephemeral cache on this turn.
+    #[pyo3(get, set)]
+    ephemeral_1h_tokens: Option<i32>,
+}
+
+#[pymethods]
+impl PyCacheCreationDetails {
+    #[new]
+    #[pyo3(signature = (ephemeral_5m_tokens = None, ephemeral_1h_tokens = None))]
+    fn new(ephemeral_5m_tokens: Option<i32>, ephemeral_1h_tokens: Option<i32>) -> Self {
+        Self {
+            ephemeral_5m_tokens,
+            ephemeral_1h_tokens,
+        }
+    }
+
+    fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let dict = PyDict::new(py);
+        match self.ephemeral_5m_tokens {
+            Some(v) => dict.set_item("ephemeral_5m_tokens", v)?,
+            None => dict.set_item("ephemeral_5m_tokens", py.None())?,
+        }
+        match self.ephemeral_1h_tokens {
+            Some(v) => dict.set_item("ephemeral_1h_tokens", v)?,
+            None => dict.set_item("ephemeral_1h_tokens", py.None())?,
+        }
+        Ok(dict.into_any())
+    }
+}
+
+#[pyclass(name = "PromptTokensDetails", from_py_object)]
+#[derive(Clone, Default)]
+struct PyPromptTokensDetails {
+    /// Tokens written to the cache on this turn (Anthropic
+    /// `cache_creation_input_tokens`). May incur a small surcharge;
+    /// subsequent requests benefit via `cached_tokens`.
+    #[pyo3(get, set)]
+    cache_creation_tokens: Option<i32>,
+    /// Per-TTL breakdown of `cache_creation_tokens`, populated only when
+    /// the provider returns it (currently Anthropic).
+    #[pyo3(get, set)]
+    cache_creation_details: Option<PyCacheCreationDetails>,
+    /// Tokens served from the cache on this turn — the headline number for
+    /// verifying prompt-caching is working (Anthropic
+    /// `cache_read_input_tokens`, OpenAI `cached_tokens`).
+    #[pyo3(get, set)]
+    cached_tokens: Option<i32>,
+    #[pyo3(get, set)]
+    audio_tokens: Option<i32>,
+}
+
+#[pymethods]
+impl PyPromptTokensDetails {
+    #[new]
+    #[pyo3(signature = (
+        cache_creation_tokens = None,
+        cache_creation_details = None,
+        cached_tokens = None,
+        audio_tokens = None,
+    ))]
+    fn new(
+        cache_creation_tokens: Option<i32>,
+        cache_creation_details: Option<PyCacheCreationDetails>,
+        cached_tokens: Option<i32>,
+        audio_tokens: Option<i32>,
+    ) -> Self {
+        Self {
+            cache_creation_tokens,
+            cache_creation_details,
+            cached_tokens,
+            audio_tokens,
+        }
+    }
+
+    fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let dict = PyDict::new(py);
+        match self.cache_creation_tokens {
+            Some(v) => dict.set_item("cache_creation_tokens", v)?,
+            None => dict.set_item("cache_creation_tokens", py.None())?,
+        }
+        match &self.cache_creation_details {
+            Some(d) => dict.set_item("cache_creation_details", d.to_dict(py)?)?,
+            None => dict.set_item("cache_creation_details", py.None())?,
+        }
+        match self.cached_tokens {
+            Some(v) => dict.set_item("cached_tokens", v)?,
+            None => dict.set_item("cached_tokens", py.None())?,
+        }
+        match self.audio_tokens {
+            Some(v) => dict.set_item("audio_tokens", v)?,
+            None => dict.set_item("audio_tokens", py.None())?,
+        }
+        Ok(dict.into_any())
+    }
+}
+
+#[pyclass(name = "CompletionTokensDetails", from_py_object)]
+#[derive(Clone, Default)]
+struct PyCompletionTokensDetails {
+    #[pyo3(get, set)]
+    accepted_prediction_tokens: Option<i32>,
+    #[pyo3(get, set)]
+    rejected_prediction_tokens: Option<i32>,
+    /// Reasoning tokens used to produce this turn's answer (Gemini
+    /// `thoughts_token_count`, OpenAI o-series reasoning, etc.). Already
+    /// included in `completion_tokens`.
+    #[pyo3(get, set)]
+    reasoning_tokens: Option<i32>,
+    #[pyo3(get, set)]
+    audio_tokens: Option<i32>,
+}
+
+#[pymethods]
+impl PyCompletionTokensDetails {
+    #[new]
+    #[pyo3(signature = (
+        accepted_prediction_tokens = None,
+        rejected_prediction_tokens = None,
+        reasoning_tokens = None,
+        audio_tokens = None,
+    ))]
+    fn new(
+        accepted_prediction_tokens: Option<i32>,
+        rejected_prediction_tokens: Option<i32>,
+        reasoning_tokens: Option<i32>,
+        audio_tokens: Option<i32>,
+    ) -> Self {
+        Self {
+            accepted_prediction_tokens,
+            rejected_prediction_tokens,
+            reasoning_tokens,
+            audio_tokens,
+        }
+    }
+
+    fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let dict = PyDict::new(py);
+        match self.accepted_prediction_tokens {
+            Some(v) => dict.set_item("accepted_prediction_tokens", v)?,
+            None => dict.set_item("accepted_prediction_tokens", py.None())?,
+        }
+        match self.rejected_prediction_tokens {
+            Some(v) => dict.set_item("rejected_prediction_tokens", v)?,
+            None => dict.set_item("rejected_prediction_tokens", py.None())?,
+        }
+        match self.reasoning_tokens {
+            Some(v) => dict.set_item("reasoning_tokens", v)?,
+            None => dict.set_item("reasoning_tokens", py.None())?,
+        }
+        match self.audio_tokens {
+            Some(v) => dict.set_item("audio_tokens", v)?,
+            None => dict.set_item("audio_tokens", py.None())?,
+        }
+        Ok(dict.into_any())
+    }
+}
+
 #[pyclass(name = "Usage", from_py_object)]
 #[derive(Clone)]
 struct PyUsage {
@@ -416,21 +616,39 @@ struct PyUsage {
     completion_tokens: Option<i32>,
     #[pyo3(get, set)]
     total_tokens: Option<i32>,
+    /// Breakdown of prompt tokens: cached vs cache-creation vs other.
+    /// Inspect ``prompt_tokens_details.cached_tokens`` to verify a
+    /// prompt-cache hit on the current turn.
+    #[pyo3(get, set)]
+    prompt_tokens_details: Option<PyPromptTokensDetails>,
+    /// Breakdown of completion tokens: reasoning vs prediction vs audio.
+    #[pyo3(get, set)]
+    completion_tokens_details: Option<PyCompletionTokensDetails>,
 }
 
 #[pymethods]
 impl PyUsage {
     #[new]
-    #[pyo3(signature = (prompt_tokens = None, completion_tokens = None, total_tokens = None))]
+    #[pyo3(signature = (
+        prompt_tokens = None,
+        completion_tokens = None,
+        total_tokens = None,
+        prompt_tokens_details = None,
+        completion_tokens_details = None,
+    ))]
     fn new(
         prompt_tokens: Option<i32>,
         completion_tokens: Option<i32>,
         total_tokens: Option<i32>,
+        prompt_tokens_details: Option<PyPromptTokensDetails>,
+        completion_tokens_details: Option<PyCompletionTokensDetails>,
     ) -> Self {
         Self {
             prompt_tokens,
             completion_tokens,
             total_tokens,
+            prompt_tokens_details,
+            completion_tokens_details,
         }
     }
 
@@ -447,6 +665,14 @@ impl PyUsage {
         match self.total_tokens {
             Some(value) => dict.set_item("total_tokens", value)?,
             None => dict.set_item("total_tokens", py.None())?,
+        }
+        match &self.prompt_tokens_details {
+            Some(d) => dict.set_item("prompt_tokens_details", d.to_dict(py)?)?,
+            None => dict.set_item("prompt_tokens_details", py.None())?,
+        }
+        match &self.completion_tokens_details {
+            Some(d) => dict.set_item("completion_tokens_details", d.to_dict(py)?)?,
+            None => dict.set_item("completion_tokens_details", py.None())?,
         }
         Ok(dict.into_any())
     }
@@ -473,6 +699,11 @@ struct PyChatResponse {
     provider_model_name: String,
     #[pyo3(get)]
     usage: PyUsage,
+    /// OpenAI Responses API: the server-stored response id, present when the
+    /// request was sent with `store=True`. Pass it as `previous_response_id`
+    /// on the next request to chain calls server-side.
+    #[pyo3(get)]
+    response_id: Option<String>,
 }
 
 #[pymethods]
@@ -493,6 +724,7 @@ impl PyChatResponse {
         provider_model_adapter_kind = None,
         provider_model_name = None,
         usage = None,
+        response_id = None,
     ))]
     fn new(
         content: Option<Bound<'_, PyAny>>,
@@ -502,6 +734,7 @@ impl PyChatResponse {
         provider_model_adapter_kind: Option<String>,
         provider_model_name: Option<String>,
         usage: Option<PyUsage>,
+        response_id: Option<String>,
     ) -> PyResult<Self> {
         Ok(Self {
             inner_content: coerce_message_content(content)?,
@@ -514,7 +747,10 @@ impl PyChatResponse {
                 prompt_tokens: None,
                 completion_tokens: None,
                 total_tokens: None,
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
             }),
+            response_id,
         })
     }
 
@@ -586,6 +822,10 @@ impl PyChatResponse {
         )?;
         dict.set_item("provider_model_name", self.provider_model_name.clone())?;
         dict.set_item("usage", self.usage.to_dict(py)?)?;
+        match &self.response_id {
+            Some(id) => dict.set_item("response_id", id.clone())?,
+            None => dict.set_item("response_id", py.None())?,
+        }
         Ok(dict.into_any())
     }
 }
@@ -601,6 +841,12 @@ struct PyStreamEnd {
     captured_usage: Option<PyUsage>,
     #[pyo3(get)]
     captured_reasoning_content: Option<String>,
+    /// OpenAI Responses API: the server-stored response id captured from
+    /// the terminal stream event (when the request was sent with
+    /// `store=True`). Feed back as `previous_response_id` on the next
+    /// request to chain calls.
+    #[pyo3(get)]
+    captured_response_id: Option<String>,
 }
 
 #[pymethods]
@@ -675,6 +921,10 @@ impl PyStreamEnd {
         match &self.captured_reasoning_content {
             Some(reasoning) => dict.set_item("captured_reasoning_content", reasoning.clone())?,
             None => dict.set_item("captured_reasoning_content", py.None())?,
+        }
+        match &self.captured_response_id {
+            Some(id) => dict.set_item("captured_response_id", id.clone())?,
+            None => dict.set_item("captured_response_id", py.None())?,
         }
         Ok(dict.into_any())
     }
@@ -968,6 +1218,7 @@ impl PyClient {
                 .unwrap_or_else(genai::chat::MessageContent::default);
             let reasoning_content = end.captured_reasoning_content;
             let usage = end.captured_usage.unwrap_or_default();
+            let response_id = end.captured_response_id;
 
             Python::attach(|py| {
                 Py::new(
@@ -980,6 +1231,7 @@ impl PyClient {
                         provider_model_adapter_kind: model_iden.adapter_kind.to_string(),
                         provider_model_name: model_iden.model_name.to_string(),
                         usage: to_py_usage(&usage),
+                        response_id,
                     },
                 )
             })
@@ -1041,6 +1293,9 @@ fn _genai_pyo3(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyTool>()?;
     module.add_class::<PyToolCall>()?;
     module.add_class::<PyUsage>()?;
+    module.add_class::<PyPromptTokensDetails>()?;
+    module.add_class::<PyCompletionTokensDetails>()?;
+    module.add_class::<PyCacheCreationDetails>()?;
     module.add_class::<PyChatResponse>()?;
     module.add_class::<PyStreamEnd>()?;
     module.add_class::<PyChatStreamEvent>()?;
@@ -1134,8 +1389,13 @@ impl TryFrom<PyChatMessage> for ChatMessage {
 
     fn try_from(message: PyChatMessage) -> Result<Self, Self::Error> {
         let role = parse_chat_role(&message.role)?;
+        let options = message
+            .cache_control
+            .as_deref()
+            .and_then(parse_cache_control)
+            .map(|cc| MessageOptions { cache_control: Some(cc) });
 
-        match role {
+        let chat_message = match role {
             ChatRole::Assistant if message.tool_calls.is_some() => {
                 // Assistant message with tool calls
                 let py_calls = message.tool_calls.unwrap();
@@ -1152,23 +1412,28 @@ impl TryFrom<PyChatMessage> for ChatMessage {
                         }
                     })
                     .collect();
-                Ok(ChatMessage::from(calls))
+                ChatMessage::from(calls)
             }
             ChatRole::Tool => {
                 // Tool response message
                 let call_id = message.tool_response_call_id.unwrap_or_default();
                 let response = ToolResponse::new(call_id, message.content);
-                Ok(ChatMessage::from(response))
+                ChatMessage::from(response)
             }
             _ => {
                 // Regular text message (system, user, assistant without tool calls)
-                Ok(ChatMessage {
+                ChatMessage {
                     role,
                     content: message.content.into(),
                     options: None,
-                })
+                }
             }
-        }
+        };
+
+        Ok(match options {
+            Some(opts) => chat_message.with_options(opts),
+            None => chat_message,
+        })
     }
 }
 
@@ -1393,8 +1658,8 @@ impl TryFrom<PyChatRequest> for ChatRequest {
             system: request.system,
             messages,
             tools,
-            previous_response_id: None,
-            store: None,
+            previous_response_id: request.previous_response_id,
+            store: request.store,
         })
     }
 }
@@ -1433,6 +1698,7 @@ impl From<PyChatOptions> for ChatOptions {
                 .reasoning_effort
                 .as_deref()
                 .and_then(parse_reasoning_effort),
+            prompt_cache_key: options.prompt_cache_key,
             ..Default::default()
         }
     }
@@ -1466,11 +1732,62 @@ fn parse_reasoning_effort(raw: &str) -> Option<ReasoningEffort> {
     }
 }
 
+/// Parse a case-insensitive cache-control keyword into a `CacheControl`.
+///
+/// Accepted: "ephemeral" (default 5m), "memory", "ephemeral_5m",
+/// "ephemeral_1h", "ephemeral_24h". Returns `None` for unrecognized
+/// values so callers get a silent no-op rather than a hard error —
+/// matches the rest of ChatOptions' "everything is optional" pattern.
+fn parse_cache_control(raw: &str) -> Option<CacheControl> {
+    let trimmed = raw.trim().to_ascii_lowercase();
+    match trimmed.as_str() {
+        "ephemeral" => Some(CacheControl::Ephemeral),
+        "memory" => Some(CacheControl::Memory),
+        "ephemeral_5m" | "5m" => Some(CacheControl::Ephemeral5m),
+        "ephemeral_1h" | "1h" => Some(CacheControl::Ephemeral1h),
+        "ephemeral_24h" | "24h" => Some(CacheControl::Ephemeral24h),
+        _ => None,
+    }
+}
+
+fn to_py_cache_creation_details(d: &CacheCreationDetails) -> PyCacheCreationDetails {
+    PyCacheCreationDetails {
+        ephemeral_5m_tokens: d.ephemeral_5m_tokens,
+        ephemeral_1h_tokens: d.ephemeral_1h_tokens,
+    }
+}
+
+fn to_py_prompt_tokens_details(d: &PromptTokensDetails) -> PyPromptTokensDetails {
+    PyPromptTokensDetails {
+        cache_creation_tokens: d.cache_creation_tokens,
+        cache_creation_details: d.cache_creation_details.as_ref().map(to_py_cache_creation_details),
+        cached_tokens: d.cached_tokens,
+        audio_tokens: d.audio_tokens,
+    }
+}
+
+fn to_py_completion_tokens_details(d: &CompletionTokensDetails) -> PyCompletionTokensDetails {
+    PyCompletionTokensDetails {
+        accepted_prediction_tokens: d.accepted_prediction_tokens,
+        rejected_prediction_tokens: d.rejected_prediction_tokens,
+        reasoning_tokens: d.reasoning_tokens,
+        audio_tokens: d.audio_tokens,
+    }
+}
+
 fn to_py_usage(usage: &Usage) -> PyUsage {
     PyUsage {
         prompt_tokens: usage.prompt_tokens,
         completion_tokens: usage.completion_tokens,
         total_tokens: usage.total_tokens,
+        prompt_tokens_details: usage
+            .prompt_tokens_details
+            .as_ref()
+            .map(to_py_prompt_tokens_details),
+        completion_tokens_details: usage
+            .completion_tokens_details
+            .as_ref()
+            .map(to_py_completion_tokens_details),
     }
 }
 
@@ -1501,6 +1818,7 @@ fn to_py_chat_response(
             provider_model_adapter_kind: response.provider_model_iden.adapter_kind.to_string(),
             provider_model_name: response.provider_model_iden.model_name.to_string(),
             usage: to_py_usage(&response.usage),
+            response_id: response.response_id,
         },
     )
 }
@@ -1510,6 +1828,7 @@ fn to_py_stream_end(end: StreamEnd) -> PyResult<PyStreamEnd> {
         captured_content: end.captured_content,
         captured_usage: end.captured_usage.as_ref().map(to_py_usage),
         captured_reasoning_content: end.captured_reasoning_content,
+        captured_response_id: end.captured_response_id,
     })
 }
 
