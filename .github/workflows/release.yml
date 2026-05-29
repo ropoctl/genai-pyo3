@@ -1,7 +1,8 @@
 # Build and publish wheels for genai-pyo3.
 #
 # Triggers:
-#   - push of a `v*.*.*` tag: build the full matrix, publish to PyPI.
+#   - push of a release tag (`v*.*.*` or `v*.*.*rc*`): build the full matrix,
+#     publish to PyPI.
 #   - workflow_dispatch: build the full matrix, upload wheels as CI artifacts
 #     only (no PyPI publish). Use this to verify a release before tagging.
 #
@@ -14,7 +15,7 @@ name: release
 
 on:
   push:
-    tags: ["v*.*.*"]
+    tags: ["v*.*.*", "v*.*.*rc*"]
   workflow_dispatch:
 
 permissions:
