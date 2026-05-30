@@ -1,6 +1,6 @@
 [package]
 name = "genai-pyo3"
-version = "0.6.1-rc.0"
+version = "0.6.3"
 edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
@@ -11,10 +11,8 @@ name = "_genai_pyo3"
 crate-type = ["cdylib"]
 
 [dependencies]
-# Pin to a specific rust-genai commit so builds are reproducible.
-# Temporarily track the ropoctl fork for the Anthropic Opus 4.7
-# adaptive-thinking fix until it is fully upstreamed and released.
-genai = { git = "https://github.com/ropoctl/rust-genai", rev = "dc43f09300255ca04b08e634c054eb197834b167" }
+# Pin to the upstream rust-genai v0.6.3 tag commit so builds are reproducible.
+genai = { git = "https://github.com/jeremychone/rust-genai", rev = "9ae164a1eb288b9110d683382384e21e64c2fe8e" }
 pyo3 = { version = "0.28", features = ["extension-module"] }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
