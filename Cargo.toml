@@ -1,6 +1,6 @@
 [package]
 name = "genai-pyo3"
-version = "0.6.4-rc.0"
+version = "0.7.0-beta.6"
 edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
@@ -11,8 +11,8 @@ name = "_genai_pyo3"
 crate-type = ["cdylib"]
 
 [dependencies]
-# Pin to the upstream rust-genai v0.6.3 tag commit so builds are reproducible.
-genai = { git = "https://github.com/jeremychone/rust-genai", rev = "9ae164a1eb288b9110d683382384e21e64c2fe8e" }
+# Pin to the upstream rust-genai v0.7.0-beta.6 tag commit so builds are reproducible.
+genai = { git = "https://github.com/jeremychone/rust-genai", rev = "e908110883e5f6473cce2c193d787b38c7ad79f1" }
 pyo3 = { version = "0.28", features = ["extension-module"] }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
