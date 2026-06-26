@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "genai-pyo3"
-version = "0.6.4rc0"
+version = "0.7.0b6"
 description = "Python bindings for rust-genai"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -20,6 +20,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: Implementation :: CPython",
     "License :: OSI Approved :: MIT License",
     "License :: OSI Approved :: Apache Software License",
