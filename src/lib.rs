@@ -1207,10 +1207,14 @@ impl PyClient {
     /// accepts ``stream=true`` (e.g. OpenAI's Responses API) but whose
     /// callers still want a single synchronous result.
     ///
-    /// `capture_content`, `capture_reasoning_content`,
-    /// `capture_tool_calls`, and `capture_usage` are forced on so the
-    /// terminal `StreamEnd` carries the aggregated content — callers do
-    /// not need to configure capture themselves.
+    /// `capture_content`, `capture_tool_calls`, and `capture_usage` are
+    /// forced on so the terminal `StreamEnd` carries the aggregated
+    /// content — callers do not need to configure capture themselves.
+    /// `capture_reasoning_content` is NOT forced: it stays opt-in, same
+    /// as rust-genai itself. On OpenAI Responses it triggers the
+    /// `reasoning.summary` request parameter, which some models reject
+    /// outright (gpt-5.3-codex-spark returns `unsupported_parameter`) —
+    /// forcing it here made basic requests to those models fail.
     #[pyo3(signature = (model, request, options = None))]
     fn achat_via_stream<'py>(
         &self,
@@ -1222,7 +1226,6 @@ impl PyClient {
         let chat_req = coerce_chat_request(request)?;
         let mut chat_options = coerce_chat_options(options)?.unwrap_or_default();
         chat_options.capture_content = Some(true);
-        chat_options.capture_reasoning_content = Some(true);
         chat_options.capture_tool_calls = Some(true);
         chat_options.capture_usage = Some(true);
         let client = self.inner.clone();

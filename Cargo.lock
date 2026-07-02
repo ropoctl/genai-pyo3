@@ -473,8 +473,8 @@ dependencies = [
 
 [[package]]
 name = "genai"
-version = "0.7.0-beta.6"
-source = "git+https://github.com/jeremychone/rust-genai?rev=e908110883e5f6473cce2c193d787b38c7ad79f1#e908110883e5f6473cce2c193d787b38c7ad79f1"
+version = "0.7.0-beta.10-WIP"
+source = "git+https://github.com/jeremychone/rust-genai?rev=cb8447e8f338a30501cbe5d1ec429bec77739fcf#cb8447e8f338a30501cbe5d1ec429bec77739fcf"
 dependencies = [
  "base64",
  "bytes",
@@ -499,7 +499,7 @@ dependencies = [
 
 [[package]]
 name = "genai-pyo3"
-version = "0.7.0-beta.6"
+version = "0.7.0-beta.10.dev0"
 dependencies = [
  "futures",
  "genai",

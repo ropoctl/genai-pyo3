@@ -188,7 +188,11 @@ class ChatOptions:
     #: "medium" | "high" | "xhigh" | "max" | "budget:<n>". When set
     #: alongside `capture_reasoning_content=True`, the OpenAI Responses
     #: adapter opts into `reasoning.summary="detailed"` — required
-    #: to get summaries back from the API.
+    #: to get summaries back from the API. Reasoning capture is opt-in
+    #: everywhere (including `achat_via_stream`): some models reject
+    #: `reasoning.summary` outright (gpt-5.3-codex-spark returns
+    #: `unsupported_parameter`), so only set
+    #: `capture_reasoning_content=True` on models that support it.
     reasoning_effort: str | None
     #: OpenAI Responses API prefix-cache key. Keep stable across requests
     #: in a session to maximise cache hits — surfaced as
