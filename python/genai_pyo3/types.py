@@ -51,11 +51,16 @@ class ToolResponsePartDict(TypedDict):
     tool_response: Any
 
 
+class CustomPartDict(TypedDict):
+    custom: Any
+
+
 ContentPartDict = Union[
     TextPartDict,
     BinaryPartDict,
     ToolCallPartDict,
     ToolResponsePartDict,
+    CustomPartDict,
 ]
 
 
@@ -65,6 +70,7 @@ class ChatMessageDict(TypedDict):
     options: NotRequired[Any]
     cache_control: NotRequired[str]
     thought_signatures: NotRequired[list[str]]
+    raw_content: NotRequired[list[dict[str, Any]]]
 
 
 class ToolDict(TypedDict):
@@ -104,6 +110,7 @@ class ChatOptionsDict(TypedDict, total=False):
     extra_headers: dict[str, str] | None
     reasoning_effort: str | None
     prompt_cache_key: str | None
+    extra_body: dict[str, Any] | None
 
 
 ChatRequestLike = Union["ChatRequest", ChatRequestDict]

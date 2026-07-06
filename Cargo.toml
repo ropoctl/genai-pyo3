@@ -1,6 +1,6 @@
 [package]
 name = "genai-pyo3"
-version = "0.7.0-beta.10.dev0"
+version = "0.7.0-beta.10.dev1"
 edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
@@ -11,11 +11,9 @@ name = "_genai_pyo3"
 crate-type = ["cdylib"]
 
 [dependencies]
-# Pin to an upstream rust-genai commit so builds are reproducible.
-# cb8447e = upstream HEAD as of 2026-07-02; upstream calls it
-# 0.7.0-beta.10-WIP (9 commits past the v0.7.0-beta.9 tag), so the
-# package version mirrors it as a dev pre-release of beta.10.
-genai = { git = "https://github.com/jeremychone/rust-genai", rev = "cb8447e8f338a30501cbe5d1ec429bec77739fcf" }
+# Pin to a rust-genai commit so builds are reproducible.
+# a3e34ca = Anthropic request extension stack on ropoctl/rust-genai.
+genai = { git = "https://github.com/ropoctl/rust-genai", rev = "a3e34cafd794b0ee3f5bc1c216c90b5e35f0960e" }
 pyo3 = { version = "0.28", features = ["extension-module"] }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

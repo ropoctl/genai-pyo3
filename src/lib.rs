@@ -3,8 +3,9 @@ use genai::Headers;
 use genai::adapter::AdapterKind;
 use genai::chat::{
     CacheControl, CacheCreationDetails, ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat,
-    ChatRole, ChatStream, ChatStreamEvent, CompletionTokensDetails, JsonSpec, MessageOptions,
-    PromptTokensDetails, ReasoningEffort, StreamEnd, Tool, ToolCall, ToolResponse, Usage,
+    ChatRole, ChatStream, ChatStreamEvent, CompletionTokensDetails, ContentPart, CustomPart,
+    JsonSpec, MessageOptions, PromptTokensDetails, ReasoningEffort, StreamEnd, Tool, ToolCall,
+    ToolResponse, Usage,
 };
 use genai::resolver::{AuthData, AuthResolver, Endpoint, ServiceTargetResolver};
 use pyo3::exceptions::{PyRuntimeError, PyStopAsyncIteration, PyValueError};
@@ -118,6 +119,11 @@ struct PyChatMessage {
     /// Responses-API prefix cache warm across turns on reasoning models.
     #[pyo3(get, set)]
     thought_signatures: Option<Vec<String>>,
+    /// Provider-native content blocks serialized as JSON. When present, the
+    /// blocks are converted to `ContentPart::Custom` values and passed through
+    /// adapters that support custom content.
+    #[pyo3(get)]
+    raw_content_json: Option<String>,
 }
 
 #[pymethods]
@@ -130,6 +136,7 @@ impl PyChatMessage {
         tool_response_call_id = None,
         cache_control = None,
         thought_signatures = None,
+        raw_content = None,
     ))]
     fn new(
         role: String,
@@ -138,8 +145,10 @@ impl PyChatMessage {
         tool_response_call_id: Option<String>,
         cache_control: Option<String>,
         thought_signatures: Option<Vec<String>>,
+        raw_content: Option<Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         validate_role(&role)?;
+        let raw_content_json = raw_content.map(coerce_schema_to_json_string).transpose()?;
         Ok(Self {
             role,
             content,
@@ -147,6 +156,7 @@ impl PyChatMessage {
             tool_response_call_id,
             cache_control,
             thought_signatures,
+            raw_content_json,
         })
     }
 
@@ -171,6 +181,15 @@ impl PyChatMessage {
         match &self.thought_signatures {
             Some(sigs) => dict.set_item("thought_signatures", sigs.clone())?,
             None => dict.set_item("thought_signatures", py.None())?,
+        }
+        match &self.raw_content_json {
+            Some(raw) => {
+                let value = serde_json::from_str::<serde_json::Value>(raw).map_err(|err| {
+                    PyRuntimeError::new_err(format!("invalid raw_content_json: {err}"))
+                })?;
+                dict.set_item("raw_content", json_value_to_py(py, &value)?)?;
+            }
+            None => dict.set_item("raw_content", py.None())?,
         }
         Ok(dict.into_any())
     }
@@ -313,6 +332,9 @@ struct PyChatOptions {
     /// `Usage.prompt_tokens_details`.
     #[pyo3(get, set)]
     prompt_cache_key: Option<String>,
+    /// Provider-specific top-level request payload fields serialized as JSON.
+    #[pyo3(get)]
+    extra_body_json: Option<String>,
 }
 
 #[pymethods]
@@ -335,6 +357,7 @@ impl PyChatOptions {
             extra_headers = None,
             reasoning_effort = None,
             prompt_cache_key = None,
+            extra_body = None,
 		))]
     fn new(
         temperature: Option<f64>,
@@ -353,8 +376,10 @@ impl PyChatOptions {
         extra_headers: Option<HashMap<String, String>>,
         reasoning_effort: Option<String>,
         prompt_cache_key: Option<String>,
-    ) -> Self {
-        Self {
+        extra_body: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        let extra_body_json = extra_body.map(coerce_schema_to_json_string).transpose()?;
+        Ok(Self {
             temperature,
             max_tokens,
             top_p,
@@ -371,7 +396,8 @@ impl PyChatOptions {
             extra_headers,
             reasoning_effort,
             prompt_cache_key,
-        }
+            extra_body_json,
+        })
     }
 }
 
@@ -1364,9 +1390,8 @@ fn coerce_schema_to_json_string(value: Bound<'_, PyAny>) -> PyResult<String> {
             "schema must be a JSON string or a JSON-serializable object: {err}"
         ))
     })?;
-    serde_json::to_string(&json_value).map_err(|err| {
-        PyValueError::new_err(format!("failed to serialize schema to JSON: {err}"))
-    })
+    serde_json::to_string(&json_value)
+        .map_err(|err| PyValueError::new_err(format!("failed to serialize schema to JSON: {err}")))
 }
 
 fn json_value_to_py(py: Python<'_>, value: &serde_json::Value) -> PyResult<Py<PyAny>> {
@@ -1430,10 +1455,20 @@ impl TryFrom<PyChatMessage> for ChatMessage {
             .cache_control
             .as_deref()
             .and_then(parse_cache_control)
-            .map(|cc| MessageOptions { cache_control: Some(cc) });
+            .map(|cc| MessageOptions {
+                cache_control: Some(cc),
+            });
         let thought_signatures = message.thought_signatures.clone();
 
         let mut chat_message = match role {
+            _ if message.raw_content_json.is_some() => {
+                let raw_content_json = message.raw_content_json.as_deref().unwrap_or("null");
+                ChatMessage {
+                    role,
+                    content: raw_content_json_to_message_content(raw_content_json)?,
+                    options: None,
+                }
+            }
             ChatRole::Assistant if message.tool_calls.is_some() => {
                 // Assistant message with tool calls
                 let py_calls = message.tool_calls.unwrap();
@@ -1491,6 +1526,26 @@ impl TryFrom<PyChatMessage> for ChatMessage {
     }
 }
 
+fn raw_content_json_to_message_content(raw: &str) -> PyResult<genai::chat::MessageContent> {
+    let value = serde_json::from_str::<serde_json::Value>(raw).map_err(|err| {
+        PyValueError::new_err(format!("raw_content must be JSON-serializable: {err}"))
+    })?;
+    let values = match value {
+        serde_json::Value::Array(items) => items,
+        other => vec![other],
+    };
+    let parts = values
+        .into_iter()
+        .map(|data| {
+            ContentPart::Custom(CustomPart {
+                model_iden: None,
+                data,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(genai::chat::MessageContent::from_parts(parts))
+}
+
 /// Accept either a `PyChatRequest` pyclass instance or any Python object that
 /// depythonizes into a `serde_json::Value` matching the rust-genai
 /// `ChatRequest` serde shape.
@@ -1516,13 +1571,14 @@ fn coerce_chat_request(obj: Bound<'_, PyAny>) -> PyResult<ChatRequest> {
 }
 
 const ROLES_LOWER: [&str; 4] = ["system", "user", "assistant", "tool"];
-const CONTENT_PART_KEYS_LOWER: [&str; 6] = [
+const CONTENT_PART_KEYS_LOWER: [&str; 7] = [
     "text",
     "binary",
     "tool_call",
     "tool_response",
     "thought_signature",
     "reasoning_content",
+    "custom",
 ];
 
 fn title_case_role(s: &str) -> Option<&'static str> {
@@ -1543,6 +1599,7 @@ fn title_case_content_part(s: &str) -> Option<&'static str> {
         "tool_response" => Some("ToolResponse"),
         "thought_signature" => Some("ThoughtSignature"),
         "reasoning_content" => Some("ReasoningContent"),
+        "custom" => Some("Custom"),
         _ => None,
     }
 }
@@ -1570,6 +1627,7 @@ fn lowercase_content_part_keys(value: &mut serde_json::Value) {
             "ToolResponse" => "tool_response",
             "ThoughtSignature" => "thought_signature",
             "ReasoningContent" => "reasoning_content",
+            "Custom" => "custom",
             _ => continue,
         };
         let inner = obj.remove(&title_key).unwrap();
@@ -1634,6 +1692,14 @@ fn normalize_content_parts(parts: &mut [serde_json::Value], path: &str) -> PyRes
                 CONTENT_PART_KEYS_LOWER, lower_key
             ))
         })?;
+        let inner = if lower_key == "custom" {
+            serde_json::json!({
+                "model_iden": null,
+                "data": inner,
+            })
+        } else {
+            inner
+        };
         part_obj.insert(title.into(), inner);
     }
     Ok(())
@@ -1734,6 +1800,11 @@ impl From<PyChatOptions> for ChatOptions {
             None
         };
 
+        let extra_body = options
+            .extra_body_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
+
         Self {
             temperature: options.temperature,
             max_tokens: options.max_tokens,
@@ -1753,6 +1824,7 @@ impl From<PyChatOptions> for ChatOptions {
                 .as_deref()
                 .and_then(parse_reasoning_effort),
             prompt_cache_key: options.prompt_cache_key,
+            extra_body,
             ..Default::default()
         }
     }
@@ -1814,7 +1886,10 @@ fn to_py_cache_creation_details(d: &CacheCreationDetails) -> PyCacheCreationDeta
 fn to_py_prompt_tokens_details(d: &PromptTokensDetails) -> PyPromptTokensDetails {
     PyPromptTokensDetails {
         cache_creation_tokens: d.cache_creation_tokens,
-        cache_creation_details: d.cache_creation_details.as_ref().map(to_py_cache_creation_details),
+        cache_creation_details: d
+            .cache_creation_details
+            .as_ref()
+            .map(to_py_cache_creation_details),
         cached_tokens: d.cached_tokens,
         audio_tokens: d.audio_tokens,
     }

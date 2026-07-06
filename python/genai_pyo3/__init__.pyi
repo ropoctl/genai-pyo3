@@ -36,14 +36,20 @@ class ToolCallPartDict(TypedDict):
 class ToolResponsePartDict(TypedDict):
     tool_response: Any
 
+class CustomPartDict(TypedDict):
+    custom: Any
+
 ContentPartDict = (
-    TextPartDict | BinaryPartDict | ToolCallPartDict | ToolResponsePartDict
+    TextPartDict | BinaryPartDict | ToolCallPartDict | ToolResponsePartDict | CustomPartDict
 )
 
 class ChatMessageDict(TypedDict):
     role: Role
     content: list[ContentPartDict]
     options: NotRequired[Any]
+    cache_control: NotRequired[str]
+    thought_signatures: NotRequired[list[str]]
+    raw_content: NotRequired[list[dict[str, Any]]]
 
 class ToolDict(TypedDict):
     name: str
@@ -86,6 +92,8 @@ class ChatOptionsDict(TypedDict, total=False):
     seed: int | None
     extra_headers: dict[str, str] | None
     reasoning_effort: str | None
+    prompt_cache_key: str | None
+    extra_body: dict[str, Any] | None
 
 # ---------------------------------------------------------------------------
 # Rust-backed pyclasses
@@ -108,6 +116,8 @@ class ChatMessage:
     #: item before the message it belongs to. Required to keep the
     #: Responses-API prefix cache warm across turns on reasoning models.
     thought_signatures: list[str] | None
+    #: Provider-native content blocks passed through as raw custom content.
+    raw_content_json: str | None
 
     def __new__(
         cls,
@@ -118,6 +128,7 @@ class ChatMessage:
         tool_response_call_id: str | None = ...,
         cache_control: str | None = ...,
         thought_signatures: list[str] | None = ...,
+        raw_content: list[dict[str, Any]] | dict[str, Any] | None = ...,
     ) -> ChatMessage: ...
     @staticmethod
     def from_python(obj: Any) -> ChatMessage: ...
@@ -198,8 +209,29 @@ class ChatOptions:
     #: in a session to maximise cache hits — surfaced as
     #: ``Usage.prompt_tokens_details.cached_tokens`` on subsequent calls.
     prompt_cache_key: str | None
+    #: Provider-specific top-level request payload fields.
+    extra_body_json: str | None
 
-    def __new__(cls) -> ChatOptions: ...
+    def __new__(
+        cls,
+        temperature: float | None = ...,
+        max_tokens: int | None = ...,
+        top_p: float | None = ...,
+        stop_sequences: list[str] | None = ...,
+        capture_usage: bool | None = ...,
+        capture_content: bool | None = ...,
+        capture_reasoning_content: bool | None = ...,
+        capture_tool_calls: bool | None = ...,
+        capture_raw_body: bool | None = ...,
+        response_json_spec: JsonSpec | None = ...,
+        response_json_mode: bool | None = ...,
+        normalize_reasoning_content: bool | None = ...,
+        seed: int | None = ...,
+        extra_headers: dict[str, str] | None = ...,
+        reasoning_effort: str | None = ...,
+        prompt_cache_key: str | None = ...,
+        extra_body: dict[str, Any] | None = ...,
+    ) -> ChatOptions: ...
 
 class ToolCall:
     call_id: str
