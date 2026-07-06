@@ -1261,7 +1261,8 @@ impl PyClient {
         options: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let chat_req = coerce_chat_request(request)?;
-        let mut chat_options = coerce_chat_options(options, self.provider.as_deref())?.unwrap_or_default();
+        let mut chat_options =
+            coerce_chat_options(options, self.provider.as_deref())?.unwrap_or_default();
         chat_options.capture_content = Some(true);
         chat_options.capture_tool_calls = Some(true);
         chat_options.capture_usage = Some(true);
@@ -1749,11 +1750,13 @@ fn sanitize_schema_json_for_provider(schema_json: &str, provider: Option<&str>) 
         return schema_json.to_string();
     };
     match provider {
-        // Gemini's Schema is a restrictive OpenAPI subset with its own rules;
-        // handled separately from the OpenAI-family strict transform.
-        Some("gemini") => sanitize_schema_gemini(&mut schema),
-        // openai, openai_resp, anthropic, and any unknown provider: OpenAI-strict
-        // is the sensible default.
+        // Gemini accepts full JSON Schema natively on its JSON Schema-native
+        // fields (responseJsonSchema / parametersJsonSchema) — `$ref`/`$defs`,
+        // `anyOf`, `type: "null"`, `additionalProperties`, etc. — so no
+        // sanitization is applied; the schema is forwarded as-is.
+        Some("gemini") => {}
+        // openai, openai_resp, anthropic, and any unknown (OpenAI-compatible)
+        // provider enforce strict structured outputs.
         _ => sanitize_schema_openai_strict(&mut schema),
     }
     serde_json::to_string(&schema).unwrap_or_else(|_| schema_json.to_string())
@@ -1809,31 +1812,6 @@ fn sanitize_schema_openai_strict(value: &mut serde_json::Value) {
     }
 }
 
-/// Gemini structured output. Gemini's `Schema` is a restrictive OpenAPI subset
-/// that rejects `additionalProperties`, `$schema`, and `title`, and does not
-/// resolve `$ref`/`$defs`. TODO: inline `$ref`/`$defs` and map JSON-Schema
-/// nullability to Gemini's `nullable`. For now, a conservative pass that drops
-/// the keywords Gemini rejects outright.
-fn sanitize_schema_gemini(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::Object(map) => {
-            map.remove("default");
-            map.remove("title");
-            map.remove("additionalProperties");
-            map.remove("$schema");
-            for child in map.values_mut() {
-                sanitize_schema_gemini(child);
-            }
-        }
-        serde_json::Value::Array(items) => {
-            for child in items.iter_mut() {
-                sanitize_schema_gemini(child);
-            }
-        }
-        _ => {}
-    }
-}
-
 /// Accept an optional `PyChatOptions` pyclass or a JSON-compatible dict.
 ///
 /// `provider` is the Client's adapter string (`"openai_resp"`, `"gemini"`, …)
@@ -1850,8 +1828,7 @@ fn coerce_chat_options(
     if let Ok(mut typed) = obj.extract::<PyChatOptions>() {
         if typed.sanitize_schema.unwrap_or(false) {
             if let Some(spec) = typed.response_json_spec.as_mut() {
-                spec.schema_json =
-                    sanitize_schema_json_for_provider(&spec.schema_json, provider);
+                spec.schema_json = sanitize_schema_json_for_provider(&spec.schema_json, provider);
             }
         }
         return Ok(Some(ChatOptions::from(typed)));
@@ -2254,7 +2231,13 @@ mod tests {
         assert!(required.contains(&json!("a")));
         assert!(required.contains(&json!("b")));
         // `default` is dropped (unsupported in strict mode)
-        assert!(obj["properties"]["b"].as_object().unwrap().get("default").is_none());
+        assert!(
+            obj["properties"]["b"]
+                .as_object()
+                .unwrap()
+                .get("default")
+                .is_none()
+        );
     }
 
     #[test]
@@ -2311,8 +2294,45 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_openai_resp_still_strictifies() {
+        // openai_resp gateways enforce strict structured output — must keep it.
+        let raw = json!({
+            "type": "object",
+            "properties": {"a": {"type": "string"}, "b": {"$ref": "#/$defs/X", "description": "d"}},
+        })
+        .to_string();
+        let out = sanitize_schema_json_for_provider(&raw, Some("openai_resp"));
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["additionalProperties"], json!(false));
+        assert_eq!(v["required"], json!(["a", "b"]));
+        // $ref sibling collapsed
+        assert_eq!(v["properties"]["b"], json!({"$ref": "#/$defs/X"}));
+    }
+
+    #[test]
+    fn dispatch_gemini_is_a_noop() {
+        // Gemini accepts full JSON Schema natively — schema forwarded unchanged.
+        let raw = json!({
+            "type": "object",
+            "title": "Root",
+            "properties": {"a": {"type": "string"}, "b": {"$ref": "#/$defs/X"}},
+            "additionalProperties": true,
+            "$defs": {"X": {"type": "object", "properties": {"n": {"type": "string"}}}}
+        })
+        .to_string();
+        let out = sanitize_schema_json_for_provider(&raw, Some("gemini"));
+        // Byte-for-byte identical (semantically): re-parse both and compare.
+        let got: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let want: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(got, want);
+    }
+
+    #[test]
     fn invalid_json_passes_through_unchanged() {
         let raw = "not json {";
-        assert_eq!(sanitize_schema_json_for_provider(raw, Some("openai_resp")), raw);
+        assert_eq!(
+            sanitize_schema_json_for_provider(raw, Some("openai_resp")),
+            raw
+        );
     }
 }
