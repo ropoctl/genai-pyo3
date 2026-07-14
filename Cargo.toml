@@ -1,6 +1,6 @@
 [package]
 name = "genai-pyo3"
-version = "0.7.0-beta.14.dev0"
+version = "0.7.0-beta.14.dev1"
 edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
@@ -12,7 +12,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # Pin rust-genai's provider-owned schema sanitizer pending upstream PR #263.
-genai = { git = "https://github.com/ropoctl/rust-genai", rev = "772d60c5a2cdb840d3c16de3643c30e3c8dee5c0" }
+genai = { git = "https://github.com/ropoctl/rust-genai", rev = "57fd45ff53e320e9f4cdf7d6c53a276404484420" }
 pyo3 = { version = "0.28", features = ["extension-module"] }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
