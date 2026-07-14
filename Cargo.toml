@@ -1,6 +1,6 @@
 [package]
 name = "genai-pyo3"
-version = "0.7.0-beta.10.dev2"
+version = "0.7.0-beta.14.dev0"
 edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
@@ -11,9 +11,8 @@ name = "_genai_pyo3"
 crate-type = ["cdylib"]
 
 [dependencies]
-# Pin to a rust-genai commit so builds are reproducible.
-# a3e34ca = Anthropic request extension stack on ropoctl/rust-genai.
-genai = { git = "https://github.com/ropoctl/rust-genai", rev = "a3e34cafd794b0ee3f5bc1c216c90b5e35f0960e" }
+# Pin rust-genai's provider-owned schema sanitizer pending upstream PR #263.
+genai = { git = "https://github.com/ropoctl/rust-genai", rev = "0b03229f59d5dddea9056c6778155fb271abe28b" }
 pyo3 = { version = "0.28", features = ["extension-module"] }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -309,13 +309,10 @@ struct PyChatOptions {
     capture_raw_body: Option<bool>,
     #[pyo3(get, set)]
     response_json_spec: Option<PyJsonSpec>,
-    /// Opt-in strict-schema sanitizer. When true, `response_json_spec`'s schema
-    /// is rewritten for OpenAI/Anthropic strict structured output before being
-    /// sent: `additionalProperties: false` and `required` (= every property
-    /// key) are injected into each object node and `default` is dropped.
-    /// Default false — schemas are forwarded untouched unless this is set. See
-    /// `sanitize_strict_schema`.
-    #[pyo3(get, set)]
+    /// Deprecated compatibility attribute. rust-genai now always applies the
+    /// selected adapter's schema normalization; this value is ignored and
+    /// reads as true for callers that still inspect it.
+    #[pyo3(get)]
     sanitize_schema: Option<bool>,
     #[pyo3(get, set)]
     response_json_mode: Option<bool>,
@@ -388,6 +385,7 @@ impl PyChatOptions {
         extra_body: Option<Bound<'_, PyAny>>,
         sanitize_schema: Option<bool>,
     ) -> PyResult<Self> {
+        let _ = sanitize_schema;
         let extra_body_json = extra_body.map(coerce_schema_to_json_string).transpose()?;
         Ok(Self {
             temperature,
@@ -407,7 +405,7 @@ impl PyChatOptions {
             reasoning_effort,
             prompt_cache_key,
             extra_body_json,
-            sanitize_schema,
+            sanitize_schema: Some(true),
         })
     }
 }
@@ -1261,7 +1259,8 @@ impl PyClient {
         options: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let chat_req = coerce_chat_request(request)?;
-        let mut chat_options = coerce_chat_options(options, self.provider.as_deref())?.unwrap_or_default();
+        let mut chat_options =
+            coerce_chat_options(options, self.provider.as_deref())?.unwrap_or_default();
         chat_options.capture_content = Some(true);
         chat_options.capture_tool_calls = Some(true);
         chat_options.capture_usage = Some(true);
@@ -1738,122 +1737,16 @@ fn coerce_message_content(obj: Option<Bound<'_, PyAny>>) -> PyResult<genai::chat
         .map_err(|err| PyValueError::new_err(format!("content list does not match schema: {err}")))
 }
 
-/// Rewrite a JSON Schema string for a provider's strict structured-output
-/// rules. Returns the rewritten JSON string (or the input unchanged if it does
-/// not parse). Dispatches on the Client's adapter/provider; unknown providers
-/// fall back to the OpenAI-strict transform, which is the sensible default for
-/// the OpenAI-compatible gateways this library targets. Opt-in — only called
-/// when `ChatOptions.sanitize_schema` is true.
-fn sanitize_schema_json_for_provider(schema_json: &str, provider: Option<&str>) -> String {
-    let Ok(mut schema) = serde_json::from_str::<serde_json::Value>(schema_json) else {
-        return schema_json.to_string();
-    };
-    match provider {
-        // Gemini's Schema is a restrictive OpenAPI subset with its own rules;
-        // handled separately from the OpenAI-family strict transform.
-        Some("gemini") => sanitize_schema_gemini(&mut schema),
-        // openai, openai_resp, anthropic, and any unknown provider: OpenAI-strict
-        // is the sensible default.
-        _ => sanitize_schema_openai_strict(&mut schema),
-    }
-    serde_json::to_string(&schema).unwrap_or_else(|_| schema_json.to_string())
-}
-
-/// OpenAI/Anthropic strict structured output. Every object node must set
-/// `additionalProperties: false` and list *every* property in `required`
-/// (optional/defaulted fields are rejected), and the `default` keyword is not
-/// accepted. Pydantic emits none of that for models with defaults or optional
-/// fields. Recurses through `$defs`, `properties`, `items`, and any
-/// `anyOf`/`allOf`/`oneOf` branches. Idempotent.
-fn sanitize_schema_openai_strict(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::Object(map) => {
-            // OpenAI strict: a `$ref` must stand alone — sibling keywords
-            // (`description`, `title`, `default`, …) are rejected. Pydantic
-            // emits `{"$ref": ..., "description": ...}` for documented nested
-            // fields, so collapse such nodes to the bare `$ref`.
-            if map.contains_key("$ref") {
-                if let Some(reference) = map.remove("$ref") {
-                    map.clear();
-                    map.insert("$ref".to_string(), reference);
-                }
-                return;
-            }
-            map.remove("default");
-            for child in map.values_mut() {
-                sanitize_schema_openai_strict(child);
-            }
-            let is_object = map.contains_key("properties")
-                || map.get("type").and_then(|t| t.as_str()) == Some("object");
-            if is_object {
-                if let Some(props) = map.get("properties").and_then(|p| p.as_object()) {
-                    let required: Vec<serde_json::Value> = props
-                        .keys()
-                        .cloned()
-                        .map(serde_json::Value::String)
-                        .collect();
-                    map.insert("required".to_string(), serde_json::Value::Array(required));
-                }
-                map.insert(
-                    "additionalProperties".to_string(),
-                    serde_json::Value::Bool(false),
-                );
-            }
-        }
-        serde_json::Value::Array(items) => {
-            for child in items.iter_mut() {
-                sanitize_schema_openai_strict(child);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Gemini structured output. Gemini's `Schema` is a restrictive OpenAPI subset
-/// that rejects `additionalProperties`, `$schema`, and `title`, and does not
-/// resolve `$ref`/`$defs`. TODO: inline `$ref`/`$defs` and map JSON-Schema
-/// nullability to Gemini's `nullable`. For now, a conservative pass that drops
-/// the keywords Gemini rejects outright.
-fn sanitize_schema_gemini(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::Object(map) => {
-            map.remove("default");
-            map.remove("title");
-            map.remove("additionalProperties");
-            map.remove("$schema");
-            for child in map.values_mut() {
-                sanitize_schema_gemini(child);
-            }
-        }
-        serde_json::Value::Array(items) => {
-            for child in items.iter_mut() {
-                sanitize_schema_gemini(child);
-            }
-        }
-        _ => {}
-    }
-}
-
 /// Accept an optional `PyChatOptions` pyclass or a JSON-compatible dict.
-///
-/// `provider` is the Client's adapter string (`"openai_resp"`, `"gemini"`, …)
-/// used to dispatch the opt-in schema sanitizer; pass `None` for an unbound
-/// Client (falls back to the default transform).
 fn coerce_chat_options(
     obj: Option<Bound<'_, PyAny>>,
-    provider: Option<&str>,
+    _provider: Option<&str>,
 ) -> PyResult<Option<ChatOptions>> {
     let Some(obj) = obj else { return Ok(None) };
     if obj.is_none() {
         return Ok(None);
     }
-    if let Ok(mut typed) = obj.extract::<PyChatOptions>() {
-        if typed.sanitize_schema.unwrap_or(false) {
-            if let Some(spec) = typed.response_json_spec.as_mut() {
-                spec.schema_json =
-                    sanitize_schema_json_for_provider(&spec.schema_json, provider);
-            }
-        }
+    if let Ok(typed) = obj.extract::<PyChatOptions>() {
         return Ok(Some(ChatOptions::from(typed)));
     }
     let value: serde_json::Value = depythonize(&obj).map_err(|err| {
@@ -1967,7 +1860,7 @@ fn parse_reasoning_effort(raw: &str) -> Option<ReasoningEffort> {
             .map(ReasoningEffort::Budget);
     }
     match trimmed.as_str() {
-        "none" => Some(ReasoningEffort::None),
+        "none" | "zero" => Some(ReasoningEffort::Zero),
         "minimal" => Some(ReasoningEffort::Minimal),
         "low" => Some(ReasoningEffort::Low),
         "medium" => Some(ReasoningEffort::Medium),
@@ -2230,89 +2123,4 @@ fn build_client_with_request_override(
 
 fn to_runtime_error(error: genai::Error) -> PyErr {
     PyRuntimeError::new_err(error.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{sanitize_schema_json_for_provider, sanitize_schema_openai_strict};
-    use serde_json::json;
-
-    #[test]
-    fn openai_strict_injects_required_and_additional_properties() {
-        let mut schema = json!({
-            "type": "object",
-            "properties": {
-                "a": {"type": "string"},
-                "b": {"type": "integer", "default": 3},
-            },
-        });
-        sanitize_schema_openai_strict(&mut schema);
-        let obj = schema.as_object().unwrap();
-        assert_eq!(obj["additionalProperties"], json!(false));
-        // every property is required, regardless of defaults
-        let required = obj["required"].as_array().unwrap();
-        assert!(required.contains(&json!("a")));
-        assert!(required.contains(&json!("b")));
-        // `default` is dropped (unsupported in strict mode)
-        assert!(obj["properties"]["b"].as_object().unwrap().get("default").is_none());
-    }
-
-    #[test]
-    fn openai_strict_collapses_ref_siblings() {
-        // `$ref` may not carry sibling keywords under OpenAI strict.
-        let mut schema = json!({
-            "$ref": "#/$defs/Axis",
-            "description": "the REAL axis",
-        });
-        sanitize_schema_openai_strict(&mut schema);
-        assert_eq!(schema, json!({"$ref": "#/$defs/Axis"}));
-    }
-
-    #[test]
-    fn openai_strict_recurses_defs_and_preserves_anyof_nullable() {
-        let mut schema = json!({
-            "$defs": {
-                "Axis": {
-                    "type": "object",
-                    "properties": {"passed": {"type": "boolean"}},
-                }
-            },
-            "type": "object",
-            "properties": {
-                "impactful": {
-                    "anyOf": [{"$ref": "#/$defs/Axis"}, {"type": "null"}],
-                    "default": null,
-                    "description": "optional axis",
-                }
-            },
-        });
-        sanitize_schema_openai_strict(&mut schema);
-        // nested $def object gets strictified
-        let axis = &schema["$defs"]["Axis"];
-        assert_eq!(axis["additionalProperties"], json!(false));
-        assert_eq!(axis["required"], json!(["passed"]));
-        // the anyOf/nullable node keeps its description (legal — not on a $ref)
-        // but loses `default`, and its $ref branch stays bare
-        let impactful = &schema["properties"]["impactful"];
-        assert_eq!(impactful["description"], json!("optional axis"));
-        assert!(impactful.as_object().unwrap().get("default").is_none());
-        assert_eq!(impactful["anyOf"][0], json!({"$ref": "#/$defs/Axis"}));
-        // impactful itself is required at the parent
-        assert_eq!(schema["required"], json!(["impactful"]));
-    }
-
-    #[test]
-    fn dispatch_unknown_provider_uses_openai_default() {
-        let raw = json!({"type": "object", "properties": {"a": {"type": "string"}}}).to_string();
-        let out = sanitize_schema_json_for_provider(&raw, Some("some-unknown-gateway"));
-        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v["additionalProperties"], json!(false));
-        assert_eq!(v["required"], json!(["a"]));
-    }
-
-    #[test]
-    fn invalid_json_passes_through_unchanged() {
-        let raw = "not json {";
-        assert_eq!(sanitize_schema_json_for_provider(raw, Some("openai_resp")), raw);
-    }
 }

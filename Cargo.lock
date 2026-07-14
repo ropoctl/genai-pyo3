@@ -473,8 +473,8 @@ dependencies = [
 
 [[package]]
 name = "genai"
-version = "0.7.0-beta.10-WIP"
-source = "git+https://github.com/ropoctl/rust-genai?rev=a3e34cafd794b0ee3f5bc1c216c90b5e35f0960e#a3e34cafd794b0ee3f5bc1c216c90b5e35f0960e"
+version = "0.7.0-beta.14-WIP"
+source = "git+https://github.com/ropoctl/rust-genai?rev=0b03229f59d5dddea9056c6778155fb271abe28b#0b03229f59d5dddea9056c6778155fb271abe28b"
 dependencies = [
  "base64",
  "bytes",
@@ -499,7 +499,7 @@ dependencies = [
 
 [[package]]
 name = "genai-pyo3"
-version = "0.7.0-beta.10.dev2"
+version = "0.7.0-beta.14.dev0"
 dependencies = [
  "futures",
  "genai",
@@ -1654,6 +1654,7 @@ version = "1.0.149"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "83fc039473c5595ace860d8c4fafa220ff474b3fc6bfdb4293327f1a37e94d86"
 dependencies = [
+ "indexmap 2.13.0",
  "itoa",
  "memchr",
  "serde",
