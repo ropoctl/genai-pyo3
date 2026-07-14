@@ -191,6 +191,9 @@ class ChatOptions:
     capture_tool_calls: bool | None
     capture_raw_body: bool | None
     response_json_spec: JsonSpec | None
+    #: Always true. Kept for source compatibility; rust-genai applies
+    #: provider schema normalization unconditionally at the adapter boundary.
+    sanitize_schema: bool
     response_json_mode: bool | None
     normalize_reasoning_content: bool | None
     seed: int | None
@@ -231,6 +234,7 @@ class ChatOptions:
         reasoning_effort: str | None = ...,
         prompt_cache_key: str | None = ...,
         extra_body: dict[str, Any] | None = ...,
+        sanitize_schema: bool | None = ...,
     ) -> ChatOptions: ...
 
 class ToolCall:
