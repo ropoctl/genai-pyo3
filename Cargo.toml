@@ -1,6 +1,6 @@
 [package]
 name = "genai-pyo3"
-version = "0.7.0-beta.14.dev3"
+version = "0.7.0-beta.15.dev0"
 edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
@@ -11,8 +11,9 @@ name = "_genai_pyo3"
 crate-type = ["cdylib"]
 
 [dependencies]
-# Temporary fork pin to rust-genai PR #263; switch back to upstream after merge.
-genai = { git = "https://github.com/ropoctl/rust-genai", rev = "e3e870dc0045604a01c2577e3b98f5682558d241" }
+# Pin upstream rust-genai 0.7.0-beta.15-WIP for reproducible builds.
+# Includes adapter-owned JSON Schema sanitization merged in PR #263.
+genai = { git = "https://github.com/jeremychone/rust-genai", rev = "1ad79ec4f66df340e3c5d28214f144b2e5163964" }
 pyo3 = { version = "0.28", features = ["extension-module"] }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
