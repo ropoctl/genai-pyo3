@@ -1,6 +1,6 @@
 [package]
 name = "genai-pyo3"
-version = "0.7.0-beta.15.dev0"
+version = "0.7.0-beta.15.dev1"
 edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
@@ -12,8 +12,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # Pin upstream rust-genai 0.7.0-beta.15-WIP for reproducible builds.
-# Includes adapter-owned JSON Schema sanitization merged in PR #263.
-genai = { git = "https://github.com/jeremychone/rust-genai", rev = "1ad79ec4f66df340e3c5d28214f144b2e5163964" }
+# Includes adapter-owned schema sanitization (#263) and custom tools (#266).
+genai = { git = "https://github.com/jeremychone/rust-genai", rev = "28a62a6ddf1f51ea4f232bb9efdc2ca384b5b13a" }
 pyo3 = { version = "0.28", features = ["extension-module"] }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
