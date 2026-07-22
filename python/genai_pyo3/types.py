@@ -77,6 +77,7 @@ class ToolDict(TypedDict):
     name: str
     description: NotRequired[str]
     schema: NotRequired[dict[str, Any]]
+    custom_format: NotRequired[dict[str, Any]]
 
 
 class ChatRequestDict(TypedDict, total=False):

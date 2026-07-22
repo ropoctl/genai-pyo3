@@ -55,6 +55,9 @@ class ToolDict(TypedDict):
     name: str
     description: NotRequired[str]
     schema: NotRequired[dict[str, Any]]
+    #: Provider-native freeform custom-tool format. OpenAI Responses accepts
+    #: grammar formats such as {"type": "grammar", "syntax": "lark", ...}.
+    custom_format: NotRequired[dict[str, Any]]
 
 class ChatRequestDict(TypedDict, total=False):
     system: str | None
@@ -137,12 +140,16 @@ class Tool:
     name: str
     description: str | None
     schema_json: str | None
+    #: Provider-native freeform custom-tool format. When present, OpenAI
+    #: Responses emits a type "custom" tool rather than a function tool.
+    custom_format: dict[str, Any] | None
 
     def __new__(
         cls,
         name: str,
         description: str | None = ...,
         schema_json: str | dict[str, Any] | None = ...,
+        custom_format: str | dict[str, Any] | None = ...,
     ) -> Tool: ...
 
 class ChatRequest:

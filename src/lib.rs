@@ -35,7 +35,9 @@ fn web_config_from_overrides(
     if connect_timeout_seconds.is_none()
         && read_timeout_seconds.is_none()
         && timeout_seconds.is_none()
-        && default_headers.as_ref().map_or(true, |h| h.is_empty())
+        && default_headers
+            .as_ref()
+            .is_none_or(|headers| headers.is_empty())
     {
         return Ok(None);
     }
@@ -260,28 +262,55 @@ struct PyTool {
     /// `dict`, e.g. ``pydantic.BaseModel.model_json_schema()``).
     #[pyo3(get)]
     schema_json: Option<String>,
+    /// Provider-native freeform custom-tool format, stored internally as JSON.
+    /// Exposed to Python as a JSON-compatible value through the custom getter.
+    custom_format_json: Option<String>,
 }
 
 #[pymethods]
 impl PyTool {
     #[new]
-    #[pyo3(signature = (name, description = None, schema_json = None))]
+    #[pyo3(signature = (name, description = None, schema_json = None, custom_format = None))]
     fn new(
         name: String,
         description: Option<String>,
         schema_json: Option<Bound<'_, PyAny>>,
+        custom_format: Option<Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let schema_json = schema_json.map(coerce_schema_to_json_string).transpose()?;
+        let custom_format_json = custom_format
+            .map(coerce_custom_format_to_json_string)
+            .transpose()?;
         Ok(Self {
             name,
             description,
             schema_json,
+            custom_format_json,
         })
     }
 
     #[setter]
     fn set_schema_json(&mut self, value: Option<Bound<'_, PyAny>>) -> PyResult<()> {
         self.schema_json = value.map(coerce_schema_to_json_string).transpose()?;
+        Ok(())
+    }
+
+    #[getter]
+    fn custom_format(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        self.custom_format_json
+            .as_deref()
+            .map(|raw| {
+                let value = serde_json::from_str(raw).map_err(|err| {
+                    PyRuntimeError::new_err(format!("invalid custom_format JSON: {err}"))
+                })?;
+                json_value_to_py(py, &value)
+            })
+            .transpose()
+    }
+
+    #[setter]
+    fn set_custom_format(&mut self, value: Option<Bound<'_, PyAny>>) -> PyResult<()> {
+        self.custom_format_json = value.map(coerce_custom_format_to_json_string).transpose()?;
         Ok(())
     }
 }
@@ -365,6 +394,7 @@ impl PyChatOptions {
             extra_body = None,
             sanitize_schema = None,
 		))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         temperature: Option<f64>,
         max_tokens: Option<u32>,
@@ -782,6 +812,7 @@ impl PyChatResponse {
         usage = None,
         response_id = None,
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         content: Option<Bound<'_, PyAny>>,
         reasoning_content: Option<String>,
@@ -1392,16 +1423,25 @@ fn parse_chat_role(role: &str) -> PyResult<ChatRole> {
 /// `str` (used as-is) or any JSON-serializable object (typically a `dict`
 /// such as ``pydantic.BaseModel.model_json_schema()``).
 fn coerce_schema_to_json_string(value: Bound<'_, PyAny>) -> PyResult<String> {
+    coerce_json_to_string(value, "schema")
+}
+
+fn coerce_custom_format_to_json_string(value: Bound<'_, PyAny>) -> PyResult<String> {
+    coerce_json_to_string(value, "custom_format")
+}
+
+fn coerce_json_to_string(value: Bound<'_, PyAny>, value_name: &str) -> PyResult<String> {
     if let Ok(s) = value.extract::<String>() {
         return Ok(s);
     }
     let json_value: serde_json::Value = depythonize(&value).map_err(|err| {
         PyValueError::new_err(format!(
-            "schema must be a JSON string or a JSON-serializable object: {err}"
+            "{value_name} must be a JSON string or a JSON-serializable object: {err}"
         ))
     })?;
-    serde_json::to_string(&json_value)
-        .map_err(|err| PyValueError::new_err(format!("failed to serialize schema to JSON: {err}")))
+    serde_json::to_string(&json_value).map_err(|err| {
+        PyValueError::new_err(format!("failed to serialize {value_name} to JSON: {err}"))
+    })
 }
 
 fn json_value_to_py(py: Python<'_>, value: &serde_json::Value) -> PyResult<Py<PyAny>> {
@@ -1657,16 +1697,16 @@ fn normalize_chat_request_value(value: &mut serde_json::Value) -> PyResult<()> {
         let Some(obj) = msg.as_object_mut() else {
             continue;
         };
-        if let Some(role_value) = obj.get("role") {
-            if let Some(role_str) = role_value.as_str() {
-                let title = title_case_role(role_str).ok_or_else(|| {
-                    PyValueError::new_err(format!(
-                        "messages[{msg_idx}].role: expected one of {:?}, got {role_str:?}",
-                        ROLES_LOWER
-                    ))
-                })?;
-                obj.insert("role".to_string(), serde_json::Value::String(title.into()));
-            }
+        if let Some(role_value) = obj.get("role")
+            && let Some(role_str) = role_value.as_str()
+        {
+            let title = title_case_role(role_str).ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "messages[{msg_idx}].role: expected one of {:?}, got {role_str:?}",
+                    ROLES_LOWER
+                ))
+            })?;
+            obj.insert("role".to_string(), serde_json::Value::String(title.into()));
         }
         let Some(parts) = obj.get_mut("content").and_then(|v| v.as_array_mut()) else {
             continue;
@@ -1769,23 +1809,9 @@ impl TryFrom<PyChatRequest> for ChatRequest {
             .map(ChatMessage::try_from)
             .collect::<PyResult<Vec<_>>>()?;
 
-        let tools = request.tools.map(|py_tools| {
-            py_tools
-                .into_iter()
-                .map(|t| {
-                    let mut tool = Tool::new(t.name);
-                    if let Some(desc) = t.description {
-                        tool = tool.with_description(desc);
-                    }
-                    if let Some(schema_str) = t.schema_json {
-                        if let Ok(schema) = serde_json::from_str::<serde_json::Value>(&schema_str) {
-                            tool = tool.with_schema(schema);
-                        }
-                    }
-                    tool
-                })
-                .collect()
-        });
+        let tools = request
+            .tools
+            .map(|py_tools| py_tools.into_iter().map(Tool::from).collect());
 
         Ok(Self {
             system: request.system,
@@ -1794,6 +1820,28 @@ impl TryFrom<PyChatRequest> for ChatRequest {
             previous_response_id: request.previous_response_id,
             store: request.store,
         })
+    }
+}
+
+impl From<PyTool> for Tool {
+    fn from(py_tool: PyTool) -> Self {
+        let mut tool = Tool::new(py_tool.name);
+        if let Some(description) = py_tool.description {
+            tool = tool.with_description(description);
+        }
+        if let Some(schema) = py_tool
+            .schema_json
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        {
+            tool = tool.with_schema(schema);
+        }
+        if let Some(custom_format) = py_tool
+            .custom_format_json
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        {
+            tool = tool.with_custom_format(custom_format);
+        }
+        tool
     }
 }
 
@@ -2123,4 +2171,35 @@ fn build_client_with_request_override(
 
 fn to_runtime_error(error: genai::Error) -> PyErr {
     PyRuntimeError::new_err(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PyTool, Tool};
+    use serde_json::json;
+
+    #[test]
+    fn py_tool_custom_format_reaches_genai_tool() {
+        let expected = json!({
+            "type": "grammar",
+            "syntax": "lark",
+            "definition": "start: \"PING\""
+        });
+        let py_tool = PyTool {
+            name: "emit_ping".to_string(),
+            description: Some("Emit the constrained token".to_string()),
+            schema_json: None,
+            custom_format_json: Some(expected.to_string()),
+        };
+
+        let tool = Tool::from(py_tool);
+
+        assert_eq!(tool.name.to_string(), "emit_ping");
+        assert_eq!(
+            tool.description.as_deref(),
+            Some("Emit the constrained token")
+        );
+        assert_eq!(tool.custom_format, Some(expected));
+        assert!(tool.schema.is_none());
+    }
 }
