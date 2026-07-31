@@ -102,6 +102,15 @@ class ChatOptionsDict(TypedDict, total=False):
 # Rust-backed pyclasses
 # ---------------------------------------------------------------------------
 
+class GenaiError(RuntimeError):
+    """Structured provider, HTTP, or transport error from rust-genai."""
+
+    kind: str
+    status_code: int | None
+    retryable: bool
+    body: str | None
+    headers: dict[str, str]
+
 class ChatMessage:
     role: str
     content: str

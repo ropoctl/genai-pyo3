@@ -13,6 +13,7 @@ genai = { git = "https://github.com/jeremychone/rust-genai" }
 The Python extension currently exposes:
 
 - `Client`
+- `GenaiError`
 - `ChatMessage`
 - `ChatRequest`
 - `ChatOptions`
@@ -59,6 +60,30 @@ async def main() -> None:
 
 asyncio.run(main())
 ```
+
+## Errors and retries
+
+Model-call failures raise `GenaiError`, a `RuntimeError` subclass with structured
+metadata copied from rust-genai:
+
+```python
+from genai_pyo3 import GenaiError
+
+try:
+    response = await client.achat(model, request)
+except GenaiError as error:
+    print(error.kind)         # e.g. "http_error", "timeout", "web_stream"
+    print(error.status_code)  # e.g. 429 or 503; None for transport failures
+    print(error.retryable)    # True for transport failures, 429, and 5xx
+    print(error.headers)      # response headers when rust-genai retained them
+    print(error.body)         # response body when rust-genai retained it
+```
+
+The library reports retryability but does not retry calls itself. This keeps
+retry budgets and backoff policy under application control. A response-body
+stream decode failure generally has no HTTP error status because the server
+already returned a successful status; it is exposed as a retryable transport
+error instead.
 
 Minimal async streaming call:
 

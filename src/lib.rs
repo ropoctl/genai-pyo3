@@ -19,6 +19,13 @@ use std::time::Duration;
 use tokio::runtime::Builder;
 use tokio::sync::Mutex;
 
+pyo3::create_exception!(
+    _genai_pyo3,
+    GenaiError,
+    PyRuntimeError,
+    "A structured error returned by rust-genai."
+);
+
 /// Default connect-timeout applied by `PyClient::with_*` builders when the
 /// caller doesn't override it. A 30-second cap is long enough to cover any
 /// realistic TCP+TLS handshake and short enough to surface a hung proxy or
@@ -1389,6 +1396,7 @@ impl PyChatStream {
 
 #[pymodule]
 fn _genai_pyo3(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add("GenaiError", module.py().get_type::<GenaiError>())?;
     module.add_class::<PyClient>()?;
     module.add_class::<PyChatMessage>()?;
     module.add_class::<PyChatRequest>()?;
@@ -2169,13 +2177,206 @@ fn build_client_with_request_override(
     })
 }
 
+#[derive(Debug, PartialEq)]
+struct ErrorMetadata {
+    kind: String,
+    status_code: Option<u16>,
+    retryable: bool,
+    body: Option<String>,
+    headers: HashMap<String, String>,
+}
+
+impl ErrorMetadata {
+    fn new(kind: impl Into<String>) -> Self {
+        Self {
+            kind: kind.into(),
+            status_code: None,
+            retryable: false,
+            body: None,
+            headers: HashMap::new(),
+        }
+    }
+}
+
+fn retryable_status(status: u16) -> bool {
+    status == 429 || status >= 500
+}
+
+fn headers_to_hash_map(headers: &HeaderMap) -> HashMap<String, String> {
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+fn reqwest_error_metadata(error: &reqwest::Error) -> ErrorMetadata {
+    let status_code = error.status().map(|status| status.as_u16());
+    let kind = if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connect"
+    } else if error.is_decode() {
+        "response_decode"
+    } else if error.is_body() {
+        "response_body"
+    } else if status_code.is_some() {
+        "http_error"
+    } else {
+        "transport"
+    };
+    ErrorMetadata {
+        kind: kind.to_string(),
+        status_code,
+        retryable: status_code.is_none_or(retryable_status),
+        body: None,
+        headers: HashMap::new(),
+    }
+}
+
+fn webc_error_metadata(error: &genai::webc::Error) -> ErrorMetadata {
+    match error {
+        genai::webc::Error::ResponseFailedStatus {
+            status,
+            body,
+            headers,
+        } => ErrorMetadata {
+            kind: "http_error".to_string(),
+            status_code: Some(status.as_u16()),
+            retryable: retryable_status(status.as_u16()),
+            body: Some(body.clone()),
+            headers: headers_to_hash_map(headers),
+        },
+        genai::webc::Error::Reqwest(error) => reqwest_error_metadata(error),
+        genai::webc::Error::ResponseFailedNotJson { body, .. } => {
+            let mut metadata = ErrorMetadata::new("response_not_json");
+            metadata.body = Some(body.clone());
+            metadata
+        }
+        genai::webc::Error::ResponseFailedInvalidJson { body, .. } => {
+            let mut metadata = ErrorMetadata::new("response_invalid_json");
+            metadata.body = Some(body.clone());
+            metadata
+        }
+        genai::webc::Error::JsonValueExt(_) => ErrorMetadata::new("json_value_ext"),
+    }
+}
+
+fn provider_stream_error_metadata(body: &serde_json::Value) -> ErrorMetadata {
+    let provider_kind = body
+        .pointer("/error/type")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| body.get("type").and_then(serde_json::Value::as_str));
+    let retryable = matches!(
+        provider_kind,
+        Some("overloaded_error" | "rate_limit_error" | "internal_server_error")
+    );
+    let mut metadata = ErrorMetadata::new(provider_kind.unwrap_or("provider_stream_error"));
+    metadata.retryable = retryable;
+    metadata.body = Some(body.to_string());
+    metadata
+}
+
+fn error_metadata(error: &genai::Error) -> ErrorMetadata {
+    match error {
+        genai::Error::WebAdapterCall { webc_error, .. }
+        | genai::Error::WebModelCall { webc_error, .. } => webc_error_metadata(webc_error),
+        genai::Error::HttpError { status, body, .. } => ErrorMetadata {
+            kind: "http_error".to_string(),
+            status_code: Some(status.as_u16()),
+            retryable: retryable_status(status.as_u16()),
+            body: Some(body.clone()),
+            headers: HashMap::new(),
+        },
+        genai::Error::WebStream { error, .. } => {
+            if let Some(error) = error.downcast_ref::<genai::Error>() {
+                error_metadata(error)
+            } else if let Some(error) = error.downcast_ref::<reqwest::Error>() {
+                reqwest_error_metadata(error)
+            } else {
+                ErrorMetadata {
+                    retryable: true,
+                    ..ErrorMetadata::new("web_stream")
+                }
+            }
+        }
+        genai::Error::StreamParse { .. } => ErrorMetadata {
+            retryable: true,
+            ..ErrorMetadata::new("stream_parse")
+        },
+        genai::Error::ChatResponse { body, .. } => provider_stream_error_metadata(body),
+        genai::Error::ChatReqHasNoMessages { .. } => ErrorMetadata::new("chat_req_has_no_messages"),
+        genai::Error::LastChatMessageIsNotUser { .. } => {
+            ErrorMetadata::new("last_chat_message_is_not_user")
+        }
+        genai::Error::MessageRoleNotSupported { .. } => {
+            ErrorMetadata::new("message_role_not_supported")
+        }
+        genai::Error::MessageContentTypeNotSupported { .. } => {
+            ErrorMetadata::new("message_content_type_not_supported")
+        }
+        genai::Error::JsonModeWithoutInstruction => {
+            ErrorMetadata::new("json_mode_without_instruction")
+        }
+        genai::Error::VerbosityParsing { .. } => ErrorMetadata::new("verbosity_parsing"),
+        genai::Error::ReasoningParsingError { .. } => ErrorMetadata::new("reasoning_parsing"),
+        genai::Error::ServiceTierParsing { .. } => ErrorMetadata::new("service_tier_parsing"),
+        genai::Error::PromptCacheRetentionParsing { .. } => {
+            ErrorMetadata::new("prompt_cache_retention_parsing")
+        }
+        genai::Error::NoChatResponse { .. } => ErrorMetadata::new("no_chat_response"),
+        genai::Error::InvalidJsonResponseElement { .. } => {
+            ErrorMetadata::new("invalid_json_response_element")
+        }
+        genai::Error::RequiresApiKey { .. } => ErrorMetadata::new("requires_api_key"),
+        genai::Error::NoAuthResolver { .. } => ErrorMetadata::new("no_auth_resolver"),
+        genai::Error::NoAuthData { .. } => ErrorMetadata::new("no_auth_data"),
+        genai::Error::ModelMapperFailed { .. } => ErrorMetadata::new("model_mapper_failed"),
+        genai::Error::ChatResponseGeneration { .. } => {
+            ErrorMetadata::new("chat_response_generation")
+        }
+        genai::Error::Resolver { .. } => ErrorMetadata::new("resolver"),
+        genai::Error::AdapterNotSupported { .. } => ErrorMetadata::new("adapter_not_supported"),
+        genai::Error::CacheBreakpointNoEligibleContent { .. } => {
+            ErrorMetadata::new("cache_breakpoint_no_eligible_content")
+        }
+        genai::Error::AdapterKindMismatch { .. } => ErrorMetadata::new("adapter_kind_mismatch"),
+        genai::Error::Internal(_) => ErrorMetadata::new("internal"),
+        genai::Error::JsonValueExt(_) => ErrorMetadata::new("json_value_ext"),
+        genai::Error::SerdeJson(_) => ErrorMetadata::new("serde_json"),
+    }
+}
+
 fn to_runtime_error(error: genai::Error) -> PyErr {
-    PyRuntimeError::new_err(error.to_string())
+    let message = error.to_string();
+    let metadata = error_metadata(&error);
+    Python::attach(|py| {
+        let python_error = GenaiError::new_err(message);
+        let instance = python_error.value(py);
+        for result in [
+            instance.setattr("kind", metadata.kind),
+            instance.setattr("status_code", metadata.status_code),
+            instance.setattr("retryable", metadata.retryable),
+            instance.setattr("body", metadata.body),
+            instance.setattr("headers", metadata.headers),
+        ] {
+            if let Err(attribute_error) = result {
+                return attribute_error;
+            }
+        }
+        python_error
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{PyTool, Tool};
+    use super::{PyTool, Tool, error_metadata, retryable_status};
+    use genai::Error;
+    use reqwest::StatusCode;
     use serde_json::json;
 
     #[test]
@@ -2201,5 +2402,47 @@ mod tests {
         );
         assert_eq!(tool.custom_format, Some(expected));
         assert!(tool.schema.is_none());
+    }
+
+    #[test]
+    fn http_error_metadata_preserves_status_and_retryability() {
+        let too_many_requests = Error::HttpError {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            canonical_reason: "Too Many Requests".to_string(),
+            body: "slow down".to_string(),
+        };
+        let metadata = error_metadata(&too_many_requests);
+        assert_eq!(metadata.kind, "http_error");
+        assert_eq!(metadata.status_code, Some(429));
+        assert_eq!(metadata.body.as_deref(), Some("slow down"));
+        assert!(metadata.retryable);
+
+        assert!(retryable_status(500));
+        assert!(!retryable_status(400));
+    }
+
+    #[test]
+    fn provider_stream_error_only_retries_transient_types() {
+        let transient = Error::ChatResponse {
+            model_iden: genai::ModelIden::from_static(
+                genai::adapter::AdapterKind::Anthropic,
+                "test-model",
+            ),
+            body: json!({"type": "error", "error": {"type": "overloaded_error"}}),
+        };
+        let metadata = error_metadata(&transient);
+        assert_eq!(metadata.kind, "overloaded_error");
+        assert!(metadata.retryable);
+
+        let permanent = Error::ChatResponse {
+            model_iden: genai::ModelIden::from_static(
+                genai::adapter::AdapterKind::Anthropic,
+                "test-model",
+            ),
+            body: json!({"type": "error", "error": {"type": "invalid_request_error"}}),
+        };
+        let metadata = error_metadata(&permanent);
+        assert_eq!(metadata.kind, "invalid_request_error");
+        assert!(!metadata.retryable);
     }
 }
