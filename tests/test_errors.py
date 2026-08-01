@@ -103,6 +103,34 @@ class GenaiErrorTests(unittest.TestCase):
         self.assertIsNone(error.status_code)
         self.assertTrue(error.retryable)
 
+    def test_stream_response_preserves_anthropic_thought_signatures(self):
+        class ThoughtSignatureStreamHandler(_ResponseHandler):
+            status = 200
+            content_type = "text/event-stream"
+            body = b"".join(
+                [
+                    b'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"test-model","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":3,"output_tokens":0}}}\n\n',
+                    b'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}\n\n',
+                    b'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"private"}}\n\n',
+                    b'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"signed-private"}}\n\n',
+                    b'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+                    b'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}\n\n',
+                    b'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"answer"}}\n\n',
+                    b'event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n',
+                    b'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}\n\n',
+                    b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+                ]
+            )
+
+        with _LocalResponseServer(ThoughtSignatureStreamHandler) as base_url:
+            response = asyncio.run(_achat_via_stream(base_url))
+
+        self.assertEqual(response.texts, ["answer"])
+        self.assertEqual(response.thought_signatures, ["signed-private"])
+        self.assertEqual(
+            response.to_dict()["thought_signatures"], ["signed-private"]
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

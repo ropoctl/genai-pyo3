@@ -26,7 +26,14 @@ The Python extension currently exposes:
 The main async entry points are:
 
 - `await client.achat(model, request, options=None)` for a full response
+- `await client.achat_via_stream(model, request, options=None)` for a fully
+  collected response from a streaming-only endpoint
 - `await client.astream_chat(model, request, options=None)` for chunked streaming
+
+`ChatResponse.reasoning_content` exposes captured readable reasoning, while
+`ChatResponse.thought_signatures` exposes encrypted reasoning signatures that
+must be retained when replaying an assistant turn. Both are also included by
+`ChatResponse.to_dict()`.
 
 ## Install
 

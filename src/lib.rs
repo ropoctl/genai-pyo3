@@ -4,8 +4,8 @@ use genai::adapter::AdapterKind;
 use genai::chat::{
     CacheControl, CacheCreationDetails, ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat,
     ChatRole, ChatStream, ChatStreamEvent, CompletionTokensDetails, ContentPart, CustomPart,
-    JsonSpec, MessageOptions, PromptTokensDetails, ReasoningEffort, StreamEnd, Tool, ToolCall,
-    ToolResponse, Usage,
+    JsonSpec, MessageContent, MessageOptions, PromptTokensDetails, ReasoningEffort, StreamEnd,
+    Tool, ToolCall, ToolResponse, Usage,
 };
 use genai::resolver::{AuthData, AuthResolver, Endpoint, ServiceTargetResolver};
 use pyo3::exceptions::{PyRuntimeError, PyStopAsyncIteration, PyValueError};
@@ -891,6 +891,18 @@ impl PyChatResponse {
             .collect()
     }
 
+    /// Return encrypted reasoning/thought signature parts captured in the
+    /// response content, in order. This also preserves stream-level
+    /// signatures collected by `achat_via_stream`.
+    #[getter]
+    fn thought_signatures(&self) -> Vec<String> {
+        self.inner_content
+            .thought_signatures()
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    }
+
     fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let dict = PyDict::new(py);
         dict.set_item("content", self.content(py)?)?;
@@ -904,6 +916,7 @@ impl PyChatResponse {
         }
         dict.set_item("texts", self.texts())?;
         dict.set_item("tool_calls", py_tool_calls_to_py(py, &self.tool_calls()?)?)?;
+        dict.set_item("thought_signatures", self.thought_signatures())?;
         match &self.reasoning_content {
             Some(reasoning) => dict.set_item("reasoning_content", reasoning.clone())?,
             None => dict.set_item("reasoning_content", py.None())?,
@@ -1313,20 +1326,28 @@ impl PyClient {
             let model_iden = stream_res.model_iden.clone();
             let mut stream = stream_res.stream;
             let mut end: Option<StreamEnd> = None;
+            let mut streamed_thought_signatures = Vec::new();
             while let Some(event) = stream.next().await {
                 let event = event.map_err(to_runtime_error)?;
-                if let ChatStreamEvent::End(e) = event {
-                    end = Some(e);
-                    break;
+                match event {
+                    ChatStreamEvent::ThoughtSignatureChunk(chunk) => {
+                        streamed_thought_signatures.push(chunk.content);
+                    }
+                    ChatStreamEvent::End(e) => {
+                        end = Some(e);
+                        break;
+                    }
+                    _ => {}
                 }
             }
 
             let end = end.ok_or_else(|| {
                 PyRuntimeError::new_err("stream ended without a terminal End event")
             })?;
-            let content = end
+            let mut content = end
                 .captured_content
                 .unwrap_or_else(genai::chat::MessageContent::default);
+            preserve_streamed_thought_signatures(&mut content, streamed_thought_signatures);
             let reasoning_content = end.captured_reasoning_content;
             let usage = end.captured_usage.unwrap_or_default();
             let response_id = end.captured_response_id;
@@ -2002,6 +2023,23 @@ fn to_py_tool_call(tool_call: &ToolCall) -> PyResult<PyToolCall> {
     })
 }
 
+fn preserve_streamed_thought_signatures(
+    content: &mut MessageContent,
+    streamed_thought_signatures: Vec<String>,
+) {
+    // Some adapters (including the pinned Anthropic adapter) expose encrypted
+    // reasoning signatures as stream chunks without copying them into the
+    // terminal StreamEnd. Prefer signatures already captured by StreamEnd and
+    // otherwise retain the streamed values in the response content.
+    if content.thought_signatures().is_empty() && !streamed_thought_signatures.is_empty() {
+        content.extend_front(
+            streamed_thought_signatures
+                .into_iter()
+                .map(ContentPart::ThoughtSignature),
+        );
+    }
+}
+
 fn to_py_chat_response(
     py: Python<'_>,
     response: genai::chat::ChatResponse,
@@ -2374,8 +2412,12 @@ fn to_runtime_error(error: genai::Error) -> PyErr {
 
 #[cfg(test)]
 mod tests {
-    use super::{PyTool, Tool, error_metadata, retryable_status};
+    use super::{
+        PyChatResponse, PyTool, PyUsage, Tool, error_metadata,
+        preserve_streamed_thought_signatures, retryable_status,
+    };
     use genai::Error;
+    use genai::chat::{ContentPart, MessageContent};
     use reqwest::StatusCode;
     use serde_json::json;
 
@@ -2402,6 +2444,55 @@ mod tests {
         );
         assert_eq!(tool.custom_format, Some(expected));
         assert!(tool.schema.is_none());
+    }
+
+    #[test]
+    fn chat_response_exposes_all_content_thought_signatures() {
+        let response = PyChatResponse {
+            inner_content: MessageContent::from_parts(vec![
+                ContentPart::ThoughtSignature("sig-one".to_string()),
+                ContentPart::Text("answer".to_string()),
+                ContentPart::ThoughtSignature("sig-two".to_string()),
+            ]),
+            reasoning_content: Some("visible reasoning".to_string()),
+            model_adapter_kind: "anthropic".to_string(),
+            model_name: "model".to_string(),
+            provider_model_adapter_kind: "anthropic".to_string(),
+            provider_model_name: "model".to_string(),
+            usage: PyUsage {
+                prompt_tokens: None,
+                completion_tokens: None,
+                total_tokens: None,
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
+            },
+            response_id: None,
+        };
+
+        assert_eq!(response.thought_signatures(), ["sig-one", "sig-two"]);
+    }
+
+    #[test]
+    fn streamed_thought_signatures_fill_missing_stream_end_capture() {
+        let mut content = MessageContent::from_text("answer");
+        preserve_streamed_thought_signatures(
+            &mut content,
+            vec!["sig-one".to_string(), "sig-two".to_string()],
+        );
+
+        assert_eq!(content.thought_signatures(), ["sig-one", "sig-two"]);
+        assert_eq!(content.texts(), ["answer"]);
+    }
+
+    #[test]
+    fn stream_end_thought_signatures_are_not_duplicated() {
+        let mut content = MessageContent::from_parts(vec![
+            ContentPart::ThoughtSignature("captured".to_string()),
+            ContentPart::Text("answer".to_string()),
+        ]);
+        preserve_streamed_thought_signatures(&mut content, vec!["streamed".to_string()]);
+
+        assert_eq!(content.thought_signatures(), ["captured"]);
     }
 
     #[test]
