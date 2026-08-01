@@ -104,6 +104,10 @@ def _chat_message_from_python(obj):
         role = str(role)
 
     content = _content_to_text(_mapping_or_attr(obj, "content", ""))
+    cache_control = _mapping_or_attr(obj, "cache_control", None)
+    thought_signatures = _mapping_or_attr(obj, "thought_signatures", None)
+    reasoning_content = _mapping_or_attr(obj, "reasoning_content", None)
+    raw_content = _mapping_or_attr(obj, "raw_content", None)
     if role == "tool":
         tool_response_call_id = _mapping_or_attr(obj, "tool_response_call_id", _MISSING)
         if tool_response_call_id is _MISSING:
@@ -120,8 +124,19 @@ def _chat_message_from_python(obj):
             role,
             content,
             tool_calls=[ToolCall.from_python(tool_call) for tool_call in tool_calls],
+            cache_control=cache_control,
+            thought_signatures=thought_signatures,
+            raw_content=raw_content,
+            reasoning_content=reasoning_content,
         )
-    return ChatMessage(role, content)
+    return ChatMessage(
+        role,
+        content,
+        cache_control=cache_control,
+        thought_signatures=thought_signatures,
+        raw_content=raw_content,
+        reasoning_content=reasoning_content,
+    )
 
 
 ToolCall.from_python = staticmethod(_tool_call_from_python)

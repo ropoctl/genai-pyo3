@@ -35,6 +35,19 @@ The main async entry points are:
 must be retained when replaying an assistant turn. Both are also included by
 `ChatResponse.to_dict()`.
 
+For a signed-thinking tool continuation, carry both values onto the assistant
+message along with the returned tool calls:
+
+```python
+assistant = ChatMessage(
+    "assistant",
+    "",
+    tool_calls=response.tool_calls,
+    thought_signatures=response.thought_signatures,
+    reasoning_content=response.reasoning_content,
+)
+```
+
 ## Install
 
 Editable install with `uv`:

@@ -55,11 +55,21 @@ class CustomPartDict(TypedDict):
     custom: Any
 
 
+class ThoughtSignaturePartDict(TypedDict):
+    thought_signature: str
+
+
+class ReasoningContentPartDict(TypedDict):
+    reasoning_content: str
+
+
 ContentPartDict = Union[
     TextPartDict,
     BinaryPartDict,
     ToolCallPartDict,
     ToolResponsePartDict,
+    ThoughtSignaturePartDict,
+    ReasoningContentPartDict,
     CustomPartDict,
 ]
 
@@ -70,6 +80,7 @@ class ChatMessageDict(TypedDict):
     options: NotRequired[Any]
     cache_control: NotRequired[str]
     thought_signatures: NotRequired[list[str]]
+    reasoning_content: NotRequired[str]
     raw_content: NotRequired[list[dict[str, Any]]]
 
 

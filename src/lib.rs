@@ -120,14 +120,16 @@ struct PyChatMessage {
     /// the rest. Unknown values are silently dropped.
     #[pyo3(get, set)]
     cache_control: Option<String>,
-    /// Encrypted reasoning blobs carried back from a prior assistant
-    /// turn (OpenAI Responses `type: "reasoning"` items). When set on an
-    /// assistant message, the openai_resp adapter emits each blob as a
-    /// top-level `{type: "reasoning", encrypted_content: ...}` input
-    /// item before the message it belongs to. Required to keep the
-    /// Responses-API prefix cache warm across turns on reasoning models.
+    /// Opaque reasoning signatures carried back from a prior assistant turn.
+    /// Depending on the adapter these become signed Anthropic thinking blocks,
+    /// Gemini thought signatures, or OpenAI encrypted reasoning items.
     #[pyo3(get, set)]
     thought_signatures: Option<Vec<String>>,
+    /// Readable reasoning paired with `thought_signatures` on an assistant
+    /// turn. Providers that require signed thinking use both values when
+    /// reconstructing the provider-native continuation block.
+    #[pyo3(get, set)]
+    reasoning_content: Option<String>,
     /// Provider-native content blocks serialized as JSON. When present, the
     /// blocks are converted to `ContentPart::Custom` values and passed through
     /// adapters that support custom content.
@@ -146,6 +148,7 @@ impl PyChatMessage {
         cache_control = None,
         thought_signatures = None,
         raw_content = None,
+        reasoning_content = None,
     ))]
     fn new(
         role: String,
@@ -155,6 +158,7 @@ impl PyChatMessage {
         cache_control: Option<String>,
         thought_signatures: Option<Vec<String>>,
         raw_content: Option<Bound<'_, PyAny>>,
+        reasoning_content: Option<String>,
     ) -> PyResult<Self> {
         validate_role(&role)?;
         let raw_content_json = raw_content.map(coerce_schema_to_json_string).transpose()?;
@@ -165,6 +169,7 @@ impl PyChatMessage {
             tool_response_call_id,
             cache_control,
             thought_signatures,
+            reasoning_content,
             raw_content_json,
         })
     }
@@ -190,6 +195,10 @@ impl PyChatMessage {
         match &self.thought_signatures {
             Some(sigs) => dict.set_item("thought_signatures", sigs.clone())?,
             None => dict.set_item("thought_signatures", py.None())?,
+        }
+        match &self.reasoning_content {
+            Some(reasoning) => dict.set_item("reasoning_content", reasoning.clone())?,
+            None => dict.set_item("reasoning_content", py.None())?,
         }
         match &self.raw_content_json {
             Some(raw) => {
@@ -1347,6 +1356,10 @@ impl PyClient {
             let mut content = end
                 .captured_content
                 .unwrap_or_else(genai::chat::MessageContent::default);
+            let streamed_thought_signatures = normalize_streamed_thought_signatures(
+                &model_iden.adapter_kind,
+                streamed_thought_signatures,
+            );
             preserve_streamed_thought_signatures(&mut content, streamed_thought_signatures);
             let reasoning_content = end.captured_reasoning_content;
             let usage = end.captured_usage.unwrap_or_default();
@@ -1538,6 +1551,7 @@ impl TryFrom<PyChatMessage> for ChatMessage {
                 cache_control: Some(cc),
             });
         let thought_signatures = message.thought_signatures.clone();
+        let reasoning_content = message.reasoning_content.clone();
 
         let mut chat_message = match role {
             _ if message.raw_content_json.is_some() => {
@@ -1564,7 +1578,17 @@ impl TryFrom<PyChatMessage> for ChatMessage {
                         }
                     })
                     .collect();
-                ChatMessage::from(calls)
+                if thought_signatures
+                    .as_ref()
+                    .is_some_and(|sigs| !sigs.is_empty())
+                {
+                    // Message-level signatures are canonical. Avoid having
+                    // ChatMessage::from(calls) also prepend the convenience
+                    // mirror carried by the first tool call.
+                    ChatMessage::assistant(genai::chat::MessageContent::from_tool_calls(calls))
+                } else {
+                    ChatMessage::from(calls)
+                }
             }
             ChatRole::Tool => {
                 // Tool response message
@@ -1582,10 +1606,9 @@ impl TryFrom<PyChatMessage> for ChatMessage {
             }
         };
 
-        // Attach encrypted reasoning blobs as ThoughtSignature parts so the
-        // openai_resp adapter can emit them as top-level `type: "reasoning"`
-        // input items in the next request. Order: signatures go FIRST in the
-        // content vector so they precede text / tool calls when serialized.
+        // Attach canonical reasoning signatures before text / tool calls.
+        // Adapters reconstruct their provider-native continuation blocks from
+        // these parts; ToolCall signatures remain a convenience mirror.
         if let Some(sigs) = thought_signatures
             && !sigs.is_empty()
         {
@@ -1597,6 +1620,8 @@ impl TryFrom<PyChatMessage> for ChatMessage {
             new_parts.extend(parts);
             chat_message.content = genai::chat::MessageContent::from_parts(new_parts);
         }
+
+        chat_message = chat_message.with_reasoning_content(reasoning_content);
 
         Ok(match options {
             Some(opts) => chat_message.with_options(opts),
@@ -2040,6 +2065,21 @@ fn preserve_streamed_thought_signatures(
     }
 }
 
+fn normalize_streamed_thought_signatures(
+    adapter_kind: &AdapterKind,
+    streamed_chunks: Vec<String>,
+) -> Vec<String> {
+    // The beta.15 Anthropic streamer exposes signature deltas without block
+    // boundaries and omits terminal signatures. Anthropic thinking responses
+    // use one signed thinking block, so its fallback must concatenate deltas
+    // into one logical signature. Other adapters retain their emitted units.
+    if matches!(adapter_kind, AdapterKind::Anthropic) && !streamed_chunks.is_empty() {
+        vec![streamed_chunks.concat()]
+    } else {
+        streamed_chunks
+    }
+}
+
 fn to_py_chat_response(
     py: Python<'_>,
     response: genai::chat::ChatResponse,
@@ -2075,6 +2115,7 @@ fn to_py_stream_end(end: StreamEnd) -> PyResult<PyStreamEnd> {
     })
 }
 
+#[allow(unreachable_patterns)]
 fn to_py_stream_event(py: Python<'_>, event: ChatStreamEvent) -> PyResult<Py<PyChatStreamEvent>> {
     let (kind, content, tool_call, end) = match event {
         ChatStreamEvent::Start => ("start".to_string(), None, None, None),
@@ -2103,6 +2144,9 @@ fn to_py_stream_event(py: Python<'_>, event: ChatStreamEvent) -> PyResult<Py<PyC
             None,
             Some(to_py_stream_end(stream_end)?),
         ),
+        // rust-genai beta.16 adds a payload-free Heartbeat variant. Keep the
+        // beta.15-pinned binding source-compatible until its revision updates.
+        _ => ("heartbeat".to_string(), None, None, None),
     };
 
     Py::new(
@@ -2386,6 +2430,8 @@ fn error_metadata(error: &genai::Error) -> ErrorMetadata {
         genai::Error::Internal(_) => ErrorMetadata::new("internal"),
         genai::Error::JsonValueExt(_) => ErrorMetadata::new("json_value_ext"),
         genai::Error::SerdeJson(_) => ErrorMetadata::new("serde_json"),
+        #[allow(unreachable_patterns)]
+        _ => ErrorMetadata::new("genai_error"),
     }
 }
 
@@ -2413,11 +2459,13 @@ fn to_runtime_error(error: genai::Error) -> PyErr {
 #[cfg(test)]
 mod tests {
     use super::{
-        PyChatResponse, PyTool, PyUsage, Tool, error_metadata,
-        preserve_streamed_thought_signatures, retryable_status,
+        PyChatMessage, PyChatResponse, PyTool, PyToolCall, PyUsage, Tool, error_metadata,
+        normalize_streamed_thought_signatures, preserve_streamed_thought_signatures,
+        retryable_status,
     };
     use genai::Error;
-    use genai::chat::{ContentPart, MessageContent};
+    use genai::adapter::AdapterKind;
+    use genai::chat::{ChatMessage, ContentPart, MessageContent};
     use reqwest::StatusCode;
     use serde_json::json;
 
@@ -2473,6 +2521,53 @@ mod tests {
     }
 
     #[test]
+    fn chat_message_preserves_reasoning_and_signatures_for_tool_continuation() {
+        let message = PyChatMessage {
+            role: "assistant".to_string(),
+            content: String::new(),
+            tool_calls: Some(vec![PyToolCall {
+                call_id: "call-1".to_string(),
+                fn_name: "lookup".to_string(),
+                fn_arguments_json: "{}".to_string(),
+                thought_signatures: Some(vec!["opaque-signature".to_string()]),
+            }]),
+            tool_response_call_id: None,
+            cache_control: None,
+            thought_signatures: Some(vec!["opaque-signature".to_string()]),
+            reasoning_content: Some("readable reasoning".to_string()),
+            raw_content_json: None,
+        };
+
+        let message = ChatMessage::try_from(message).expect("convert assistant message");
+        assert_eq!(message.content.thought_signatures(), ["opaque-signature"]);
+        assert_eq!(message.content.reasoning_contents(), ["readable reasoning"]);
+        assert_eq!(message.content.tool_calls().len(), 1);
+    }
+
+    #[test]
+    fn chat_message_uses_tool_signature_mirror_when_message_signature_is_absent() {
+        let message = PyChatMessage {
+            role: "assistant".to_string(),
+            content: String::new(),
+            tool_calls: Some(vec![PyToolCall {
+                call_id: "call-1".to_string(),
+                fn_name: "lookup".to_string(),
+                fn_arguments_json: "{}".to_string(),
+                thought_signatures: Some(vec!["mirrored-signature".to_string()]),
+            }]),
+            tool_response_call_id: None,
+            cache_control: None,
+            thought_signatures: None,
+            reasoning_content: Some("readable reasoning".to_string()),
+            raw_content_json: None,
+        };
+
+        let message = ChatMessage::try_from(message).expect("convert assistant message");
+        assert_eq!(message.content.thought_signatures(), ["mirrored-signature"]);
+        assert_eq!(message.content.reasoning_contents(), ["readable reasoning"]);
+    }
+
+    #[test]
     fn streamed_thought_signatures_fill_missing_stream_end_capture() {
         let mut content = MessageContent::from_text("answer");
         preserve_streamed_thought_signatures(
@@ -2482,6 +2577,16 @@ mod tests {
 
         assert_eq!(content.thought_signatures(), ["sig-one", "sig-two"]);
         assert_eq!(content.texts(), ["answer"]);
+    }
+
+    #[test]
+    fn anthropic_streamed_signature_deltas_form_one_fallback_signature() {
+        let signatures = normalize_streamed_thought_signatures(
+            &AdapterKind::Anthropic,
+            vec!["signed-".to_string(), "fragmented".to_string()],
+        );
+
+        assert_eq!(signatures, ["signed-fragmented"]);
     }
 
     #[test]

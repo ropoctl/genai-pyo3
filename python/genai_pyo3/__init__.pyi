@@ -39,8 +39,20 @@ class ToolResponsePartDict(TypedDict):
 class CustomPartDict(TypedDict):
     custom: Any
 
+class ThoughtSignaturePartDict(TypedDict):
+    thought_signature: str
+
+class ReasoningContentPartDict(TypedDict):
+    reasoning_content: str
+
 ContentPartDict = (
-    TextPartDict | BinaryPartDict | ToolCallPartDict | ToolResponsePartDict | CustomPartDict
+    TextPartDict
+    | BinaryPartDict
+    | ToolCallPartDict
+    | ToolResponsePartDict
+    | ThoughtSignaturePartDict
+    | ReasoningContentPartDict
+    | CustomPartDict
 )
 
 class ChatMessageDict(TypedDict):
@@ -49,6 +61,7 @@ class ChatMessageDict(TypedDict):
     options: NotRequired[Any]
     cache_control: NotRequired[str]
     thought_signatures: NotRequired[list[str]]
+    reasoning_content: NotRequired[str]
     raw_content: NotRequired[list[dict[str, Any]]]
 
 class ToolDict(TypedDict):
@@ -121,13 +134,12 @@ class ChatMessage:
     #: to ``cache_control`` at the content-part level. OpenAI maps a
     #: subset to request-level caching and ignores the rest.
     cache_control: str | None
-    #: Encrypted reasoning blobs from a prior assistant turn (OpenAI
-    #: Responses ``type:"reasoning"`` items). When set on an assistant
-    #: message, the ``openai_resp`` adapter emits each blob as a
-    #: top-level ``{type:"reasoning", encrypted_content:...}`` input
-    #: item before the message it belongs to. Required to keep the
-    #: Responses-API prefix cache warm across turns on reasoning models.
+    #: Opaque reasoning signatures from a prior assistant turn. Adapters map
+    #: these to signed thinking blocks or encrypted reasoning items.
     thought_signatures: list[str] | None
+    #: Readable reasoning paired with ``thought_signatures`` for signed
+    #: assistant-thinking continuations.
+    reasoning_content: str | None
     #: Provider-native content blocks passed through as raw custom content.
     raw_content_json: str | None
 
@@ -141,6 +153,7 @@ class ChatMessage:
         cache_control: str | None = ...,
         thought_signatures: list[str] | None = ...,
         raw_content: list[dict[str, Any]] | dict[str, Any] | None = ...,
+        reasoning_content: str | None = ...,
     ) -> ChatMessage: ...
     @staticmethod
     def from_python(obj: Any) -> ChatMessage: ...
@@ -396,11 +409,8 @@ class StreamEnd:
     #: the terminal stream event. Feed back as ``previous_response_id``
     #: on the next request to chain calls.
     captured_response_id: str | None
-    #: Encrypted reasoning blobs (``type:"reasoning"`` items) from the
-    #: streamed response. On OpenAI Responses-API reasoning models
-    #: these must be carried back into the next turn's input — as
-    #: ``ChatMessage(thought_signatures=...)`` on the assistant turn —
-    #: to keep the prefix cache warm.
+    #: Opaque reasoning signatures from the streamed response. Carry these
+    #: back with readable reasoning when the provider requires signed thinking.
     captured_thought_signatures: list[str] | None
 
     @property

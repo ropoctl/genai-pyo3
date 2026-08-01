@@ -3,7 +3,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 import unittest
 
-from genai_pyo3 import ChatMessage, ChatRequest, Client, GenaiError
+from genai_pyo3 import ChatMessage, ChatRequest, Client, GenaiError, ToolCall
 
 
 class _ResponseHandler(BaseHTTPRequestHandler):
@@ -63,6 +63,45 @@ async def _achat_via_stream(base_url):
 
 
 class GenaiErrorTests(unittest.TestCase):
+    def test_assistant_message_preserves_signed_reasoning_metadata(self):
+        message = ChatMessage(
+            "assistant",
+            "",
+            tool_calls=[
+                ToolCall(
+                    "call-1",
+                    "lookup",
+                    "{}",
+                    thought_signatures=["opaque-signature"],
+                )
+            ],
+            thought_signatures=["opaque-signature"],
+            reasoning_content="readable reasoning",
+        )
+
+        self.assertEqual(message.thought_signatures, ["opaque-signature"])
+        self.assertEqual(message.reasoning_content, "readable reasoning")
+        self.assertEqual(message.to_dict()["reasoning_content"], "readable reasoning")
+
+        converted = ChatMessage.from_python(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "name": "lookup",
+                        "arguments": {},
+                        "thought_signatures": ["opaque-signature"],
+                    }
+                ],
+                "thought_signatures": ["opaque-signature"],
+                "reasoning_content": "readable reasoning",
+            }
+        )
+        self.assertEqual(converted.thought_signatures, ["opaque-signature"])
+        self.assertEqual(converted.reasoning_content, "readable reasoning")
+
     def test_nonstream_http_error_exposes_status_headers_and_body(self):
         with _LocalResponseServer(_ResponseHandler) as base_url:
             with self.assertRaises(GenaiError) as raised:
@@ -112,7 +151,8 @@ class GenaiErrorTests(unittest.TestCase):
                     b'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"test-model","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":3,"output_tokens":0}}}\n\n',
                     b'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}\n\n',
                     b'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"private"}}\n\n',
-                    b'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"signed-private"}}\n\n',
+                    b'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"signed-"}}\n\n',
+                    b'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"private"}}\n\n',
                     b'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
                     b'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}\n\n',
                     b'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"answer"}}\n\n',
