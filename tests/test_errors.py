@@ -1,9 +1,10 @@
 import asyncio
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
 from threading import Thread
 import unittest
 
-from genai_pyo3 import ChatMessage, ChatRequest, Client, GenaiError, ToolCall
+from genai_pyo3 import ChatMessage, ChatOptions, ChatRequest, Client, GenaiError, ToolCall
 
 
 class _ResponseHandler(BaseHTTPRequestHandler):
@@ -12,8 +13,11 @@ class _ResponseHandler(BaseHTTPRequestHandler):
     content_type = "application/json"
     retry_after = "2"
     truncate_body = False
+    requests = []
 
     def do_POST(self):
+        content_length = int(self.headers.get("content-length", "0"))
+        type(self).requests.append(self.rfile.read(content_length))
         self.send_response(self.status)
         self.send_header("content-type", self.content_type)
         self.send_header("retry-after", self.retry_after)
@@ -170,6 +174,92 @@ class GenaiErrorTests(unittest.TestCase):
         self.assertEqual(
             response.to_dict()["thought_signatures"], ["signed-private"]
         )
+
+    def test_start_signatures_and_multiple_thinking_blocks_round_trip(self):
+        class StartSignatureStreamHandler(_ResponseHandler):
+            status = 200
+            content_type = "text/event-stream"
+            requests = []
+            body = b"".join(
+                [
+                    b'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"test-model","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":3,"output_tokens":0}}}\n\n',
+                    b'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"First ","signature":"signature-one"}}\n\n',
+                    b'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"block."}}\n\n',
+                    b'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+                    b'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"thinking","thinking":"","signature":"signature-two"}}\n\n',
+                    b'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"thinking_delta","thinking":"Second block."}}\n\n',
+                    b'event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n',
+                    b'event: content_block_start\ndata: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"call-1","name":"lookup","input":{}}}\n\n',
+                    b'event: content_block_delta\ndata: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\\"query\\":\\"status\\"}"}}\n\n',
+                    b'event: content_block_stop\ndata: {"type":"content_block_stop","index":2}\n\n',
+                    b'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":4}}\n\n',
+                    b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+                ]
+            )
+
+        async def collect_response(base_url):
+            return await _client(base_url).achat_via_stream(
+                "test-model",
+                _request(),
+                ChatOptions(capture_reasoning_content=True),
+            )
+
+        with _LocalResponseServer(StartSignatureStreamHandler) as base_url:
+            response = asyncio.run(collect_response(base_url))
+
+        self.assertEqual(
+            response.thought_signatures, ["signature-one", "signature-two"]
+        )
+        self.assertEqual(response.reasoning_content, "First block.Second block.")
+        self.assertEqual(
+            [
+                part["reasoning_content"]
+                for part in response.content
+                if "reasoning_content" in part
+            ],
+            ["First block.", "Second block."],
+        )
+
+        assistant = response.to_assistant_message_for_tool_use()
+        self.assertIsNotNone(assistant)
+
+        class ContinuationHandler(_ResponseHandler):
+            status = 200
+            content_type = "application/json"
+            requests = []
+            body = b'{"id":"msg_2","type":"message","role":"assistant","model":"test-model","content":[{"type":"text","text":"done"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":1}}'
+
+        continuation = ChatRequest(
+            messages=[
+                assistant,
+                ChatMessage("tool", "available", tool_response_call_id="call-1"),
+            ]
+        )
+
+        async def send_continuation(base_url):
+            return await _client(base_url).achat("test-model", continuation)
+
+        with _LocalResponseServer(ContinuationHandler) as base_url:
+            asyncio.run(send_continuation(base_url))
+
+        request_body = json.loads(ContinuationHandler.requests[0])
+        assistant_content = request_body["messages"][0]["content"]
+        self.assertEqual(
+            assistant_content[:2],
+            [
+                {
+                    "type": "thinking",
+                    "thinking": "First block.",
+                    "signature": "signature-one",
+                },
+                {
+                    "type": "thinking",
+                    "thinking": "Second block.",
+                    "signature": "signature-two",
+                },
+            ],
+        )
+        self.assertEqual(assistant_content[2]["type"], "tool_use")
 
 
 if __name__ == "__main__":

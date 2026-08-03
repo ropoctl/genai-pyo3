@@ -2,10 +2,11 @@
 
 Typed Python bindings for the Rust [`genai`](https://github.com/jeremychone/rust-genai) crate, built with `pyo3` and `maturin`.
 
-This repo uses the upstream GitHub repository for `genai` directly:
+Release `0.7.0.3` pins the completed signed-thinking round-trip change from
+rust-genai PR #275:
 
 ```toml
-genai = { git = "https://github.com/jeremychone/rust-genai", rev = "cf3396e3ac9c6bf74be5a9ed4c2400ff920f29e7" }
+genai = { git = "https://github.com/ropoctl/rust-genai", rev = "df357375f31fa3990bf8cd1d3edeac5359efd90c" }
 ```
 
 ## What It Exposes
@@ -35,18 +36,15 @@ The main async entry points are:
 must be retained when replaying an assistant turn. Both are also included by
 `ChatResponse.to_dict()`.
 
-For a signed-thinking tool continuation, carry both values onto the assistant
-message along with the returned tool calls:
+For a signed-thinking tool continuation, use the response helper. It preserves
+the original reasoning/signature block associations, including multiple blocks:
 
 ```python
-assistant = ChatMessage(
-    "assistant",
-    "",
-    tool_calls=response.tool_calls,
-    thought_signatures=response.thought_signatures,
-    reasoning_content=response.reasoning_content,
-)
+assistant = response.to_assistant_message_for_tool_use()
 ```
+
+The explicit `ChatMessage(...)` fields remain available for providers that use
+a single flattened reasoning block.
 
 ## Install
 

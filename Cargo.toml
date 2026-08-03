@@ -5,14 +5,15 @@ edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
 description = "Python bindings for rust-genai"
+exclude = ["opus5.json"]
 
 [lib]
 name = "_genai_pyo3"
 crate-type = ["cdylib"]
 
 [dependencies]
-# Pin to Jeremy's upstream main HEAD as of the 0.7.0.2 release so builds are reproducible.
-genai = { git = "https://github.com/jeremychone/rust-genai", rev = "cf3396e3ac9c6bf74be5a9ed4c2400ff920f29e7" }
+# Pin to the completed rust-genai PR #275 commit for reproducible signed-thinking round trips.
+genai = { git = "https://github.com/ropoctl/rust-genai", rev = "df357375f31fa3990bf8cd1d3edeac5359efd90c" }
 pyo3 = { version = "0.28", features = ["extension-module"] }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
