@@ -5,7 +5,7 @@ Typed Python bindings for the Rust [`genai`](https://github.com/jeremychone/rust
 This repo uses the upstream GitHub repository for `genai` directly:
 
 ```toml
-genai = { git = "https://github.com/jeremychone/rust-genai" }
+genai = { git = "https://github.com/jeremychone/rust-genai", rev = "cf3396e3ac9c6bf74be5a9ed4c2400ff920f29e7" }
 ```
 
 ## What It Exposes
@@ -190,4 +190,4 @@ source .venv/bin/activate
 uv pip install -e .
 ```
 
-If you want stricter reproducibility, pin that dependency to a branch, tag, or revision.
+The committed dependency uses an exact upstream revision for reproducible builds.
