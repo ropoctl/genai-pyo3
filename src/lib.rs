@@ -16,7 +16,8 @@ mod response;
 use pyo3::prelude::*;
 
 #[pymodule]
-fn _genai_pyo3(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _genai_pyo3(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
+    errors::register(py, module)?;
     module.add_class::<client::PyClient>()?;
     module.add_class::<chat::PyChatMessage>()?;
     module.add_class::<chat::PyChatRequest>()?;

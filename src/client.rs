@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use crate::chat::{coerce_chat_options, coerce_chat_request};
 use crate::convert::build_header_map;
-use crate::errors::to_runtime_error;
+use crate::errors::to_py_err;
 use crate::response::{PyChatResponse, PyChatStream, to_py_chat_response, to_py_usage};
 
 /// Default connect-timeout applied by `PyClient::with_*` builders when the
@@ -173,7 +173,7 @@ impl PyClient {
             py,
             self.inner.exec_chat(model, chat_req, chat_options.as_ref()),
         )?
-        .map_err(to_runtime_error)?;
+        .map_err(to_py_err)?;
 
         to_py_chat_response(py, chat_res)
     }
@@ -194,7 +194,7 @@ impl PyClient {
             let chat_res = client
                 .exec_chat(model, chat_req, chat_options.as_ref())
                 .await
-                .map_err(to_runtime_error)?;
+                .map_err(to_py_err)?;
 
             Python::attach(|py| to_py_chat_response(py, chat_res))
         })
@@ -216,7 +216,7 @@ impl PyClient {
             let stream_res = client
                 .exec_chat_stream(model, chat_req, chat_options.as_ref())
                 .await
-                .map_err(to_runtime_error)?;
+                .map_err(to_py_err)?;
 
             Python::attach(|py| {
                 Py::new(py, PyChatStream::new(stream_res.stream)).map_err(|err| {
@@ -259,13 +259,13 @@ impl PyClient {
             let stream_res = client
                 .exec_chat_stream(model, chat_req, Some(&chat_options))
                 .await
-                .map_err(to_runtime_error)?;
+                .map_err(to_py_err)?;
 
             let model_iden = stream_res.model_iden.clone();
             let mut stream = stream_res.stream;
             let mut end: Option<StreamEnd> = None;
             while let Some(event) = stream.next().await {
-                let event = event.map_err(to_runtime_error)?;
+                let event = event.map_err(to_py_err)?;
                 if let ChatStreamEvent::End(e) = event {
                     end = Some(e);
                     break;

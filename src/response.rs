@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 
 use crate::chat::{PyToolCall, py_tool_calls_to_py, to_py_tool_call};
 use crate::convert::{coerce_message_content, lowercase_content_part_keys};
-use crate::errors::to_runtime_error;
+use crate::errors::to_py_err;
 
 #[pyclass(name = "CacheCreationDetails", from_py_object)]
 #[derive(Clone, Default)]
@@ -599,7 +599,7 @@ impl PyChatStream {
 
             match stream.next().await {
                 Some(Ok(event)) => Python::attach(|py| to_py_stream_event(py, event)),
-                Some(Err(err)) => Err(to_runtime_error(err)),
+                Some(Err(err)) => Err(to_py_err(err)),
                 None => {
                     *guard = None;
                     Err(PyStopAsyncIteration::new_err("stream exhausted"))

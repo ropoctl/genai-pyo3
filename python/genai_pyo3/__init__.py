@@ -2,6 +2,9 @@ import json
 from collections.abc import Mapping
 
 from ._genai_pyo3 import (
+    ApiError,
+    AuthError,
+    BadRequestError,
     CacheCreationDetails,
     ChatMessage,
     ChatOptions,
@@ -10,11 +13,20 @@ from ._genai_pyo3 import (
     ChatStreamEvent,
     Client,
     CompletionTokensDetails,
+    ConfigError,
+    GenaiError,
     JsonSpec,
     PromptTokensDetails,
+    RateLimitError,
+    ResolverError,
+    ResponseError,
+    ServerError,
     StreamEnd,
+    StreamError,
     Tool,
     ToolCall,
+    TransportError,
+    UnsupportedError,
     Usage,
 )
 
@@ -142,6 +154,9 @@ from .types import (
 )
 
 __all__ = [
+    "ApiError",
+    "AuthError",
+    "BadRequestError",
     "CacheCreationDetails",
     "ChatMessage",
     "ChatMessageDict",
@@ -155,14 +170,23 @@ __all__ = [
     "ChatStreamEvent",
     "Client",
     "CompletionTokensDetails",
+    "ConfigError",
     "ContentPartDict",
+    "GenaiError",
     "JsonSpec",
     "JsonSpecDict",
     "PromptTokensDetails",
+    "RateLimitError",
+    "ResolverError",
+    "ResponseError",
     "Role",
+    "ServerError",
     "StreamEnd",
+    "StreamError",
     "Tool",
     "ToolCall",
     "ToolDict",
+    "TransportError",
+    "UnsupportedError",
     "Usage",
 ]

@@ -34,6 +34,16 @@ classifiers = [
 Repository = "https://github.com/ropoctl/genai-pyo3"
 Issues = "https://github.com/ropoctl/genai-pyo3/issues"
 
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
 [tool.maturin]
 python-source = "python"
 module-name = "genai_pyo3._genai_pyo3"
