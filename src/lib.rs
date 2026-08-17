@@ -5,6 +5,7 @@
 //! - [`errors`]   — rust-genai errors mapped onto Python exceptions
 //! - [`chat`]     — request-side pyclasses (messages, requests, tools, options)
 //! - [`response`] — response-side pyclasses (usage, responses, streaming)
+//! - [`target`]   — routing types (adapter, model, endpoint, auth, target)
 //! - [`client`]   — the `Client` pyclass and its construction helpers
 
 mod chat;
@@ -12,6 +13,7 @@ mod client;
 mod convert;
 mod errors;
 mod response;
+mod target;
 
 use pyo3::prelude::*;
 
@@ -19,6 +21,11 @@ use pyo3::prelude::*;
 fn _genai_pyo3(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     errors::register(py, module)?;
     module.add_class::<client::PyClient>()?;
+    module.add_class::<target::PyAdapterKind>()?;
+    module.add_class::<target::PyModelIden>()?;
+    module.add_class::<target::PyEndpoint>()?;
+    module.add_class::<target::PyAuthData>()?;
+    module.add_class::<target::PyServiceTarget>()?;
     module.add_class::<chat::PyChatMessage>()?;
     module.add_class::<chat::PyChatRequest>()?;
     module.add_class::<chat::PyChatOptions>()?;

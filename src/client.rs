@@ -2,7 +2,6 @@
 
 use futures::StreamExt;
 use genai::Headers;
-use genai::adapter::AdapterKind;
 use genai::chat::{ChatStreamEvent, StreamEnd};
 use genai::resolver::{AuthData, AuthResolver, Endpoint, ServiceTargetResolver};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -14,6 +13,7 @@ use crate::chat::{coerce_chat_options, coerce_chat_request};
 use crate::convert::build_header_map;
 use crate::errors::to_py_err;
 use crate::response::{PyChatResponse, PyChatStream, to_py_chat_response, to_py_usage};
+use crate::target::{ModelLike, parse_adapter_kind};
 
 /// Default connect-timeout applied by `PyClient::with_*` builders when the
 /// caller doesn't override it. A 30-second cap is long enough to cover any
@@ -162,7 +162,7 @@ impl PyClient {
     fn chat<'py>(
         &self,
         py: Python<'py>,
-        model: String,
+        model: ModelLike,
         request: Bound<'py, PyAny>,
         options: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Py<PyChatResponse>> {
@@ -171,7 +171,8 @@ impl PyClient {
 
         let chat_res = block_on_shared_runtime(
             py,
-            self.inner.exec_chat(model, chat_req, chat_options.as_ref()),
+            self.inner
+                .exec_chat(model.into_spec(), chat_req, chat_options.as_ref()),
         )?
         .map_err(to_py_err)?;
 
@@ -182,17 +183,18 @@ impl PyClient {
     fn achat<'py>(
         &self,
         py: Python<'py>,
-        model: String,
+        model: ModelLike,
         request: Bound<'py, PyAny>,
         options: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let chat_req = coerce_chat_request(request)?;
         let chat_options = coerce_chat_options(options, self.provider.as_deref())?;
+        let model_spec = model.into_spec();
         let client = self.inner.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let chat_res = client
-                .exec_chat(model, chat_req, chat_options.as_ref())
+                .exec_chat(model_spec, chat_req, chat_options.as_ref())
                 .await
                 .map_err(to_py_err)?;
 
@@ -204,17 +206,18 @@ impl PyClient {
     fn astream_chat<'py>(
         &self,
         py: Python<'py>,
-        model: String,
+        model: ModelLike,
         request: Bound<'py, PyAny>,
         options: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let chat_req = coerce_chat_request(request)?;
         let chat_options = coerce_chat_options(options, self.provider.as_deref())?;
+        let model_spec = model.into_spec();
         let client = self.inner.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let stream_res = client
-                .exec_chat_stream(model, chat_req, chat_options.as_ref())
+                .exec_chat_stream(model_spec, chat_req, chat_options.as_ref())
                 .await
                 .map_err(to_py_err)?;
 
@@ -243,7 +246,7 @@ impl PyClient {
     fn achat_via_stream<'py>(
         &self,
         py: Python<'py>,
-        model: String,
+        model: ModelLike,
         request: Bound<'py, PyAny>,
         options: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
@@ -253,11 +256,12 @@ impl PyClient {
         chat_options.capture_content = Some(true);
         chat_options.capture_tool_calls = Some(true);
         chat_options.capture_usage = Some(true);
+        let model_spec = model.into_spec();
         let client = self.inner.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let stream_res = client
-                .exec_chat_stream(model, chat_req, Some(&chat_options))
+                .exec_chat_stream(model_spec, chat_req, Some(&chat_options))
                 .await
                 .map_err(to_py_err)?;
 
@@ -358,15 +362,6 @@ fn web_config_from_overrides(
         web_config = web_config.with_default_headers(build_header_map(&headers)?);
     }
     Ok(Some(web_config))
-}
-
-fn parse_adapter_kind(provider: &str) -> PyResult<AdapterKind> {
-    let normalized = provider.trim().to_ascii_lowercase();
-    AdapterKind::from_lower_str(&normalized).ok_or_else(|| {
-		PyValueError::new_err(format!(
-			"invalid provider '{provider}'. expected one of: openai, openai_resp, gemini, anthropic, fireworks, together, groq, mimo, nebius, xai, deepseek, zai, bigmodel, aliyun, cohere, ollama"
-		))
-	})
 }
 
 fn build_client_with_overrides(
