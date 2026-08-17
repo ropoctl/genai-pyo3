@@ -89,8 +89,11 @@ def test_non_json_body_is_a_response_error(client, request_obj, fake_provider):
 
 def test_transport_failure_is_retryable(request_obj):
     # Port 1 has nothing listening, so the connection is refused outright.
-    client = g.Client.with_api_key_and_base_url(
-        "openai", "sk-test", "http://127.0.0.1:1/v1/"
+    client = (
+        g.Client.builder()
+        .adapter_kind("openai")
+        .provider("openai", endpoint="http://127.0.0.1:1/v1/", auth=g.AuthData.key("sk-test"))
+        .build()
     )
 
     with pytest.raises(g.TransportError) as excinfo:
@@ -105,7 +108,12 @@ def test_missing_credentials_raise_auth_error(request_obj, monkeypatch):
     # var, so clear it — otherwise this passes or fails based on the shell
     # the suite happens to run in.
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    client = g.Client.with_base_url("openai", "http://127.0.0.1:1/v1/")
+    client = (
+        g.Client.builder()
+        .adapter_kind("openai")
+        .provider("openai", endpoint="http://127.0.0.1:1/v1/")
+        .build()
+    )
 
     with pytest.raises(g.AuthError) as excinfo:
         client.chat("fake-model", request_obj)

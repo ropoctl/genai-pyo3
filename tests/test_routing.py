@@ -148,8 +148,14 @@ class TestRoutingPerCall:
         self, fake_provider, request_obj
     ):
         # ModelIden pins the adapter but leaves endpoint/auth to the client.
-        client = g.Client.with_api_key_and_base_url(
-            "openai", "sk-test", fake_provider.base_url
+        client = (
+            g.Client.builder()
+            .provider(
+                "openai",
+                endpoint=fake_provider.base_url,
+                auth=g.AuthData.key("sk-test"),
+            )
+            .build()
         )
 
         response = client.chat(g.ModelIden("openai", "fake-model"), request_obj)

@@ -1,7 +1,7 @@
 import asyncio
 import os
 
-from genai_pyo3 import ChatMessage, ChatOptions, ChatRequest, Client
+from genai_pyo3 import AuthData, ChatMessage, ChatOptions, ChatRequest, Client
 
 
 def normalize_base_url(base_url: str) -> str:
@@ -13,12 +13,14 @@ async def main() -> None:
     base_url = os.environ.get("GEMINI_BASE_URL")
     model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 
+    builder = (
+        Client.builder()
+        .adapter_kind("gemini")
+        .provider("gemini", auth=AuthData.key(api_key))
+    )
     if base_url:
-        client = Client.with_api_key_and_base_url(
-            "gemini", api_key, normalize_base_url(base_url)
-        )
-    else:
-        client = Client.with_api_key("gemini", api_key)
+        builder = builder.provider("gemini", endpoint=normalize_base_url(base_url))
+    client = builder.build()
 
     request = ChatRequest(
         messages=[ChatMessage("user", "Reply with exactly: gemini stream ok")]

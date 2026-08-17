@@ -1,12 +1,17 @@
 import asyncio
 import os
 
-from genai_pyo3 import ChatMessage, ChatRequest, Client
+from genai_pyo3 import AuthData, ChatMessage, ChatRequest, Client
 
 
 async def main() -> None:
     api_key = os.environ["OPENAI_API_KEY"]
-    client = Client.with_api_key("openai", api_key)
+    client = (
+        Client.builder()
+        .adapter_kind("openai")
+        .provider("openai", auth=AuthData.key(api_key))
+        .build()
+    )
 
     request = ChatRequest(
         messages=[ChatMessage("user", "Say hello in one short sentence")]

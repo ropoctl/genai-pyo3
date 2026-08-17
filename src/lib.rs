@@ -21,6 +21,7 @@ use pyo3::prelude::*;
 fn _genai_pyo3(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     errors::register(py, module)?;
     module.add_class::<client::PyClient>()?;
+    module.add_class::<client::PyClientBuilder>()?;
     module.add_class::<target::PyAdapterKind>()?;
     module.add_class::<target::PyModelIden>()?;
     module.add_class::<target::PyEndpoint>()?;

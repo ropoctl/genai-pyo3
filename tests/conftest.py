@@ -109,8 +109,15 @@ def fake_provider():
 def client(fake_provider):
     import genai_pyo3
 
-    return genai_pyo3.Client.with_api_key_and_base_url(
-        "openai", "sk-test", fake_provider.base_url
+    return (
+        genai_pyo3.Client.builder()
+        .adapter_kind("openai")
+        .provider(
+            "openai",
+            endpoint=fake_provider.base_url,
+            auth=genai_pyo3.AuthData.key("sk-test"),
+        )
+        .build()
     )
 
 

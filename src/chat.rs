@@ -674,10 +674,7 @@ pub(crate) fn coerce_chat_request(obj: Bound<'_, PyAny>) -> PyResult<ChatRequest
 }
 
 /// Accept an optional `PyChatOptions` pyclass or a JSON-compatible dict.
-pub(crate) fn coerce_chat_options(
-    obj: Option<Bound<'_, PyAny>>,
-    _provider: Option<&str>,
-) -> PyResult<Option<ChatOptions>> {
+pub(crate) fn coerce_chat_options(obj: Option<Bound<'_, PyAny>>) -> PyResult<Option<ChatOptions>> {
     let Some(obj) = obj else { return Ok(None) };
     if obj.is_none() {
         return Ok(None);
