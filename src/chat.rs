@@ -2,7 +2,7 @@
 
 use genai::chat::{
     ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat, ChatRole, JsonSpec, MessageOptions,
-    Tool, ToolCall, ToolResponse,
+    ServiceTier, Tool, ToolCall, ToolChoice, ToolResponse, Verbosity,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -261,13 +261,28 @@ pub(crate) struct PyChatOptions {
     capture_raw_body: Option<bool>,
     #[pyo3(get, set)]
     response_json_spec: Option<PyJsonSpec>,
-    /// Deprecated compatibility attribute. rust-genai now always applies the
-    /// selected adapter's schema normalization; this value is ignored and
-    /// reads as true for callers that still inspect it.
-    #[pyo3(get)]
-    sanitize_schema: Option<bool>,
     #[pyo3(get, set)]
     response_json_mode: Option<bool>,
+    /// Tool selection preference: "auto", "none", "required", or the name
+    /// of a specific tool the model must call. Unrecognised values are a
+    /// ValueError rather than a silent no-op — a mistyped tool name here
+    /// would otherwise quietly become "the model may do as it likes".
+    #[pyo3(get, set)]
+    tool_choice: Option<String>,
+    /// Response length preference where the provider has one (OpenAI
+    /// gpt-5 family): "low", "medium", or "high".
+    #[pyo3(get, set)]
+    verbosity: Option<String>,
+    /// OpenAI processing tier: "flex" (cheaper, slower), "auto", or
+    /// "default".
+    #[pyo3(get, set)]
+    service_tier: Option<String>,
+    /// Request-level prompt-cache hint. Accepted: "ephemeral",
+    /// "ephemeral_5m", "ephemeral_1h", "ephemeral_24h", "memory".
+    /// Anthropic auto-marks the static tools+system prefix; OpenAI maps a
+    /// subset onto its request-level cache settings.
+    #[pyo3(get, set)]
+    cache_control: Option<String>,
     #[pyo3(get, set)]
     normalize_reasoning_content: Option<bool>,
     #[pyo3(get, set)]
@@ -315,7 +330,10 @@ impl PyChatOptions {
             reasoning_effort = None,
             prompt_cache_key = None,
             extra_body = None,
-            sanitize_schema = None,
+            tool_choice = None,
+            verbosity = None,
+            service_tier = None,
+            cache_control = None,
 		))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -336,10 +354,24 @@ impl PyChatOptions {
         reasoning_effort: Option<String>,
         prompt_cache_key: Option<String>,
         extra_body: Option<Bound<'_, PyAny>>,
-        sanitize_schema: Option<bool>,
+        tool_choice: Option<String>,
+        verbosity: Option<String>,
+        service_tier: Option<String>,
+        cache_control: Option<String>,
     ) -> PyResult<Self> {
-        let _ = sanitize_schema;
         let extra_body_json = extra_body.map(coerce_schema_to_json_string).transpose()?;
+        // Validate the enum-shaped strings here, at construction, so a typo
+        // is a ValueError at the call site rather than an option that
+        // silently does nothing on the wire.
+        if let Some(value) = verbosity.as_deref() {
+            parse_verbosity(value)?;
+        }
+        if let Some(value) = service_tier.as_deref() {
+            parse_service_tier(value)?;
+        }
+        if let Some(value) = cache_control.as_deref() {
+            parse_cache_control_strict(value)?;
+        }
         Ok(Self {
             temperature,
             max_tokens,
@@ -358,7 +390,10 @@ impl PyChatOptions {
             reasoning_effort,
             prompt_cache_key,
             extra_body_json,
-            sanitize_schema: Some(true),
+            tool_choice,
+            verbosity,
+            service_tier,
+            cache_control,
         })
     }
 }
@@ -644,9 +679,64 @@ impl From<PyChatOptions> for ChatOptions {
                 .and_then(parse_reasoning_effort),
             prompt_cache_key: options.prompt_cache_key,
             extra_body,
+            tool_choice: options.tool_choice.as_deref().map(parse_tool_choice),
+            verbosity: options
+                .verbosity
+                .as_deref()
+                .and_then(|v| parse_verbosity(v).ok()),
+            service_tier: options
+                .service_tier
+                .as_deref()
+                .and_then(|v| parse_service_tier(v).ok()),
+            cache_control: options
+                .cache_control
+                .as_deref()
+                .and_then(parse_cache_control),
             ..Default::default()
         }
     }
+}
+
+/// Map a tool-choice keyword onto rust-genai's enum. Anything that is not
+/// one of the three keywords names a specific tool the model must call.
+fn parse_tool_choice(raw: &str) -> ToolChoice {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "auto" => ToolChoice::Auto,
+        "none" => ToolChoice::None,
+        "required" => ToolChoice::Required,
+        _ => ToolChoice::tool(raw.trim()),
+    }
+}
+
+fn parse_verbosity(raw: &str) -> PyResult<Verbosity> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "low" => Ok(Verbosity::Low),
+        "medium" => Ok(Verbosity::Medium),
+        "high" => Ok(Verbosity::High),
+        other => Err(PyValueError::new_err(format!(
+            "invalid verbosity {other:?}. expected one of: low, medium, high"
+        ))),
+    }
+}
+
+fn parse_service_tier(raw: &str) -> PyResult<ServiceTier> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "flex" => Ok(ServiceTier::Flex),
+        "auto" => Ok(ServiceTier::Auto),
+        "default" => Ok(ServiceTier::Default),
+        other => Err(PyValueError::new_err(format!(
+            "invalid service_tier {other:?}. expected one of: flex, auto, default"
+        ))),
+    }
+}
+
+fn parse_cache_control_strict(raw: &str) -> PyResult<()> {
+    parse_cache_control(raw).map(|_| ()).ok_or_else(|| {
+        PyValueError::new_err(format!(
+            "invalid cache_control {raw:?}. expected one of: ephemeral, memory, \
+             ephemeral_5m, ephemeral_1h, ephemeral_24h"
+        ))
+    })
 }
 
 /// Accept either a `PyChatRequest` pyclass instance or any Python object that
@@ -687,9 +777,35 @@ pub(crate) fn coerce_chat_options(obj: Option<Bound<'_, PyAny>>) -> PyResult<Opt
             "chat options must be a ChatOptions or a JSON-compatible dict: {err}"
         ))
     })?;
-    serde_json::from_value(value).map(Some).map_err(|err| {
-        PyValueError::new_err(format!("chat options dict does not match schema: {err}"))
-    })
+    serde_json::from_value(fill_chat_options_defaults(value))
+        .map(Some)
+        .map_err(|err| {
+            PyValueError::new_err(format!("chat options dict does not match schema: {err}"))
+        })
+}
+
+/// Overlay a caller's option dict onto a serialized `ChatOptions::default()`.
+///
+/// Every field of the dict form is meant to be optional, but not every
+/// field of the Rust struct carries a serde default — `stop_sequences` is a
+/// bare `Vec<String>`, so deserializing `{"temperature": 0.4}` fails with
+/// "missing field `stop_sequences`". Starting from the default and layering
+/// the caller's keys on top keeps the dict form genuinely partial, and does
+/// so for any other non-defaulted field upstream may add.
+fn fill_chat_options_defaults(value: serde_json::Value) -> serde_json::Value {
+    let Some(provided) = value.as_object() else {
+        return value;
+    };
+    let Ok(mut base) = serde_json::to_value(ChatOptions::default()) else {
+        return value;
+    };
+    let Some(base_obj) = base.as_object_mut() else {
+        return value;
+    };
+    for (key, entry) in provided {
+        base_obj.insert(key.clone(), entry.clone());
+    }
+    base
 }
 
 #[cfg(test)]
