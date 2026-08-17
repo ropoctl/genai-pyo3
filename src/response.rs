@@ -3,7 +3,7 @@
 use futures::StreamExt;
 use genai::chat::{
     CacheCreationDetails, ChatStream, ChatStreamEvent, CompletionTokensDetails,
-    PromptTokensDetails, StreamEnd, Usage,
+    PromptTokensDetails, StopReason, StreamEnd, Usage,
 };
 use pyo3::exceptions::{PyRuntimeError, PyStopAsyncIteration};
 use pyo3::prelude::*;
@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::chat::{PyToolCall, py_tool_calls_to_py, to_py_tool_call};
-use crate::convert::{coerce_message_content, lowercase_content_part_keys};
+use crate::convert::{coerce_message_content, json_value_to_py, lowercase_content_part_keys};
 use crate::errors::to_py_err;
 
 #[pyclass(name = "CacheCreationDetails", from_py_object)]
@@ -270,11 +270,25 @@ pub(crate) struct PyChatResponse {
     pub(crate) provider_model_name: String,
     #[pyo3(get)]
     pub(crate) usage: PyUsage,
+    /// Why generation stopped, normalised across providers: "completed",
+    /// "max_tokens", "tool_call", "content_filter", "stop_sequence", or
+    /// "other". `"max_tokens"` is the only way to tell a truncated answer
+    /// from a complete one — a truncated response otherwise looks like a
+    /// short one.
+    #[pyo3(get)]
+    pub(crate) stop_reason: Option<String>,
+    /// The provider's own stop-reason string, before normalisation
+    /// ("stop", "end_turn", "MAX_TOKENS", ...).
+    #[pyo3(get)]
+    pub(crate) stop_reason_raw: Option<String>,
     /// OpenAI Responses API: the server-stored response id, present when the
     /// request was sent with `store=True`. Pass it as `previous_response_id`
     /// on the next request to chain calls server-side.
     #[pyo3(get)]
     pub(crate) response_id: Option<String>,
+    /// The provider's raw response body, present only when the request set
+    /// `capture_raw_body=True`.
+    pub(crate) captured_raw_body: Option<serde_json::Value>,
 }
 
 #[pymethods]
@@ -296,6 +310,8 @@ impl PyChatResponse {
         provider_model_name = None,
         usage = None,
         response_id = None,
+        stop_reason = None,
+        stop_reason_raw = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -307,6 +323,8 @@ impl PyChatResponse {
         provider_model_name: Option<String>,
         usage: Option<PyUsage>,
         response_id: Option<String>,
+        stop_reason: Option<String>,
+        stop_reason_raw: Option<String>,
     ) -> PyResult<Self> {
         Ok(Self {
             inner_content: coerce_message_content(content)?,
@@ -323,7 +341,20 @@ impl PyChatResponse {
                 completion_tokens_details: None,
             }),
             response_id,
+            stop_reason,
+            stop_reason_raw,
+            captured_raw_body: None,
         })
+    }
+
+    /// The provider's raw response body as a Python value, or `None` unless
+    /// the request set `capture_raw_body=True`.
+    #[getter]
+    fn captured_raw_body(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        match &self.captured_raw_body {
+            Some(value) => json_value_to_py(py, value),
+            None => Ok(py.None()),
+        }
     }
 
     /// Full content as a list of lowercase-keyed content-part dicts
@@ -398,6 +429,15 @@ impl PyChatResponse {
             Some(id) => dict.set_item("response_id", id.clone())?,
             None => dict.set_item("response_id", py.None())?,
         }
+        match &self.stop_reason {
+            Some(reason) => dict.set_item("stop_reason", reason.clone())?,
+            None => dict.set_item("stop_reason", py.None())?,
+        }
+        match &self.stop_reason_raw {
+            Some(reason) => dict.set_item("stop_reason_raw", reason.clone())?,
+            None => dict.set_item("stop_reason_raw", py.None())?,
+        }
+        dict.set_item("captured_raw_body", self.captured_raw_body(py)?)?;
         Ok(dict.into_any())
     }
 }
@@ -428,6 +468,13 @@ pub(crate) struct PyStreamEnd {
     /// OpenAI encrypted_content blob.)
     #[pyo3(get)]
     captured_thought_signatures: Option<Vec<String>>,
+    /// Normalised stop reason captured at stream end — same vocabulary as
+    /// `ChatResponse.stop_reason`.
+    #[pyo3(get)]
+    captured_stop_reason: Option<String>,
+    /// The provider's own stop-reason string, before normalisation.
+    #[pyo3(get)]
+    captured_stop_reason_raw: Option<String>,
 }
 
 #[pymethods]
@@ -510,6 +557,14 @@ impl PyStreamEnd {
         match &self.captured_thought_signatures {
             Some(sigs) => dict.set_item("captured_thought_signatures", sigs.clone())?,
             None => dict.set_item("captured_thought_signatures", py.None())?,
+        }
+        match &self.captured_stop_reason {
+            Some(reason) => dict.set_item("captured_stop_reason", reason.clone())?,
+            None => dict.set_item("captured_stop_reason", py.None())?,
+        }
+        match &self.captured_stop_reason_raw {
+            Some(reason) => dict.set_item("captured_stop_reason_raw", reason.clone())?,
+            None => dict.set_item("captured_stop_reason_raw", py.None())?,
         }
         Ok(dict.into_any())
     }
@@ -653,10 +708,31 @@ pub(crate) fn to_py_usage(usage: &Usage) -> PyUsage {
     }
 }
 
+/// Split a `StopReason` into its normalised name and the provider's own
+/// string. The raw value is kept because providers keep inventing reasons
+/// that normalise to "other", and debugging those needs the original.
+pub(crate) fn stop_reason_parts(reason: &StopReason) -> (&'static str, String) {
+    match reason {
+        StopReason::Completed(raw) => ("completed", raw.clone()),
+        StopReason::MaxTokens(raw) => ("max_tokens", raw.clone()),
+        StopReason::ToolCall(raw) => ("tool_call", raw.clone()),
+        StopReason::ContentFilter(raw) => ("content_filter", raw.clone()),
+        StopReason::StopSequence(raw) => ("stop_sequence", raw.clone()),
+        StopReason::Other(raw) => ("other", raw.clone()),
+    }
+}
+
 pub(crate) fn to_py_chat_response(
     py: Python<'_>,
     response: genai::chat::ChatResponse,
 ) -> PyResult<Py<PyChatResponse>> {
+    let (stop_reason, stop_reason_raw) = match response.stop_reason.as_ref() {
+        Some(reason) => {
+            let (name, raw) = stop_reason_parts(reason);
+            (Some(name.to_string()), Some(raw))
+        }
+        None => (None, None),
+    };
     Py::new(
         py,
         PyChatResponse {
@@ -667,7 +743,10 @@ pub(crate) fn to_py_chat_response(
             provider_model_adapter_kind: response.provider_model_iden.adapter_kind.to_string(),
             provider_model_name: response.provider_model_iden.model_name.to_string(),
             usage: to_py_usage(&response.usage),
+            stop_reason,
+            stop_reason_raw,
             response_id: response.response_id,
+            captured_raw_body: response.captured_raw_body,
         },
     )
 }
@@ -679,12 +758,21 @@ fn to_py_stream_end(end: StreamEnd) -> PyResult<PyStreamEnd> {
     let captured_thought_signatures: Option<Vec<String>> = end
         .captured_thought_signatures()
         .map(|v| v.into_iter().map(String::from).collect());
+    let (captured_stop_reason, captured_stop_reason_raw) = match end.captured_stop_reason.as_ref() {
+        Some(reason) => {
+            let (name, raw) = stop_reason_parts(reason);
+            (Some(name.to_string()), Some(raw))
+        }
+        None => (None, None),
+    };
     Ok(PyStreamEnd {
         captured_content: end.captured_content,
         captured_usage: end.captured_usage.as_ref().map(to_py_usage),
         captured_reasoning_content: end.captured_reasoning_content,
         captured_response_id: end.captured_response_id,
         captured_thought_signatures,
+        captured_stop_reason,
+        captured_stop_reason_raw,
     })
 }
 

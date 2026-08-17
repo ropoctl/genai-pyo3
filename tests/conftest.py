@@ -126,3 +126,32 @@ def request_obj():
     import genai_pyo3
 
     return genai_pyo3.ChatRequest(messages=[genai_pyo3.ChatMessage("user", "ping")])
+
+
+def sse(chunks: list[dict[str, Any]], finish_reason: str = "stop") -> str:
+    """Render an OpenAI-style streaming response body.
+
+    Each entry becomes one `data:` frame; the last carries `finish_reason`,
+    and the stream is terminated with the `[DONE]` sentinel.
+    """
+    frames = []
+    for index, delta in enumerate(chunks):
+        last = index == len(chunks) - 1
+        frames.append(
+            json.dumps(
+                {
+                    "id": "chatcmpl-fake",
+                    "object": "chat.completion.chunk",
+                    "model": "fake-model",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": delta,
+                            "finish_reason": finish_reason if last else None,
+                        }
+                    ],
+                }
+            )
+        )
+    frames.append("[DONE]")
+    return "".join(f"data: {frame}\n\n" for frame in frames)

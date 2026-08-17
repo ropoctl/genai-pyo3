@@ -14,7 +14,9 @@ use crate::chat::{coerce_chat_options, coerce_chat_request};
 use crate::convert::build_header_map;
 use crate::errors::to_py_err;
 use crate::resolvers::{PyCallback, auth_resolver_fn, model_mapper_fn, service_target_resolver_fn};
-use crate::response::{PyChatResponse, PyChatStream, to_py_chat_response, to_py_usage};
+use crate::response::{
+    PyChatResponse, PyChatStream, stop_reason_parts, to_py_chat_response, to_py_usage,
+};
 use crate::target::{AdapterKindLike, EndpointLike, ModelLike, PyAdapterKind, PyAuthData};
 
 /// Connect-timeout applied unless `ClientBuilder.timeouts(...)` says
@@ -203,6 +205,15 @@ impl PyClient {
             let reasoning_content = end.captured_reasoning_content;
             let usage = end.captured_usage.unwrap_or_default();
             let response_id = end.captured_response_id;
+            // Carry the stream's stop reason onto the collected response so
+            // this path can report truncation like the non-streaming one.
+            let (stop_reason, stop_reason_raw) = match end.captured_stop_reason.as_ref() {
+                Some(reason) => {
+                    let (name, raw) = stop_reason_parts(reason);
+                    (Some(name.to_string()), Some(raw))
+                }
+                None => (None, None),
+            };
 
             Python::attach(|py| {
                 Py::new(
@@ -215,7 +226,11 @@ impl PyClient {
                         provider_model_adapter_kind: model_iden.adapter_kind.to_string(),
                         provider_model_name: model_iden.model_name.to_string(),
                         usage: to_py_usage(&usage),
+                        stop_reason,
+                        stop_reason_raw,
                         response_id,
+                        // Streaming has no single raw body to capture.
+                        captured_raw_body: None,
                     },
                 )
             })
