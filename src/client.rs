@@ -9,7 +9,6 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use std::collections::HashMap;
 use std::time::Duration;
-use tokio::runtime::Builder;
 
 use crate::chat::{coerce_chat_options, coerce_chat_request};
 use crate::convert::build_header_map;
@@ -170,16 +169,11 @@ impl PyClient {
         let chat_req = coerce_chat_request(request)?;
         let chat_options = coerce_chat_options(options, self.provider.as_deref())?;
 
-        let runtime = Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .map_err(|err| {
-                PyRuntimeError::new_err(format!("failed to build Tokio runtime: {err}"))
-            })?;
-
-        let chat_res = runtime
-            .block_on(self.inner.exec_chat(model, chat_req, chat_options.as_ref()))
-            .map_err(to_runtime_error)?;
+        let chat_res = block_on_shared_runtime(
+            py,
+            self.inner.exec_chat(model, chat_req, chat_options.as_ref()),
+        )?
+        .map_err(to_runtime_error)?;
 
         to_py_chat_response(py, chat_res)
     }
@@ -305,6 +299,32 @@ impl PyClient {
             })
         })
     }
+}
+
+/// Drive `fut` to completion on the runtime shared with the async entry
+/// points, with the GIL released for the duration.
+///
+/// The runtime comes from `pyo3_async_runtimes` — the same multi-threaded,
+/// `enable_all()` runtime that backs `achat` / `astream_chat`. Building a
+/// fresh runtime per call (as this used to) span up and tore down an entire
+/// worker pool for every synchronous request.
+///
+/// Calling a blocking entry point from inside a running runtime — a resolver
+/// callback that re-enters the client, say — would panic deep inside tokio,
+/// so it is rejected up front with an actionable message.
+fn block_on_shared_runtime<F>(py: Python<'_>, fut: F) -> PyResult<F::Output>
+where
+    F: std::future::Future + Send,
+    F::Output: Send,
+{
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return Err(PyRuntimeError::new_err(
+            "blocking Client.chat() called from inside a running async runtime \
+             (e.g. from a resolver callback). Use the async entry points \
+             (achat / astream_chat) instead.",
+        ));
+    }
+    Ok(py.detach(|| pyo3_async_runtimes::tokio::get_runtime().block_on(fut)))
 }
 
 fn web_config_from_overrides(
