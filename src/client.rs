@@ -4,7 +4,7 @@ use futures::StreamExt;
 use genai::ModelIden;
 use genai::adapter::AdapterKind;
 use genai::chat::{ChatOptions, ChatStreamEvent, StreamEnd};
-use genai::resolver::{AuthData, AuthResolver, Endpoint, ServiceTargetResolver};
+use genai::resolver::{AuthData, AuthResolver, Endpoint, ModelMapper, ServiceTargetResolver};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use std::collections::HashMap;
@@ -13,6 +13,7 @@ use std::time::Duration;
 use crate::chat::{coerce_chat_options, coerce_chat_request};
 use crate::convert::build_header_map;
 use crate::errors::to_py_err;
+use crate::resolvers::{PyCallback, auth_resolver_fn, model_mapper_fn, service_target_resolver_fn};
 use crate::response::{PyChatResponse, PyChatStream, to_py_chat_response, to_py_usage};
 use crate::target::{AdapterKindLike, EndpointLike, ModelLike, PyAdapterKind, PyAuthData};
 
@@ -249,6 +250,9 @@ pub(crate) struct PyClientBuilder {
     total_timeout_seconds: Option<f64>,
     default_headers: Option<HashMap<String, String>>,
     timeouts_configured: bool,
+    auth_callback: Option<PyCallback>,
+    model_mapper_callback: Option<PyCallback>,
+    service_target_callback: Option<PyCallback>,
 }
 
 #[pymethods]
@@ -324,6 +328,52 @@ impl PyClientBuilder {
         slf
     }
 
+    /// Resolve credentials per request: `fn(ModelIden) -> AuthData | None`.
+    ///
+    /// Consulted before the declarative `provider(auth=...)` table, so it
+    /// can override one; returning `None` means "not mine" and falls
+    /// through to that table and then to the adapter's default key
+    /// environment variable.
+    ///
+    /// Must be a regular `def`. It is called synchronously, while holding
+    /// the GIL, on whichever thread is driving the request — so blocking
+    /// inside it stalls that request and every other Python thread with
+    /// it. Cache in Python instead.
+    fn auth_resolver<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        callback: Bound<'py, PyAny>,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        slf.auth_callback = Some(PyCallback::new(callback, "auth_resolver")?);
+        Ok(slf)
+    }
+
+    /// Rewrite model identities: `fn(ModelIden) -> ModelIden | str`.
+    ///
+    /// Returning a bare string renames the model but keeps the adapter,
+    /// which is all an alias table needs. Same threading rules as
+    /// `auth_resolver`.
+    fn model_mapper<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        callback: Bound<'py, PyAny>,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        slf.model_mapper_callback = Some(PyCallback::new(callback, "model_mapper")?);
+        Ok(slf)
+    }
+
+    /// Rewrite the whole target: `fn(ServiceTarget) -> ServiceTarget`.
+    ///
+    /// Runs after the declarative `provider(endpoint=...)` overrides have
+    /// been applied and receives the result, so it has the last word on
+    /// endpoint, credential, and model alike. Same threading rules as
+    /// `auth_resolver`.
+    fn service_target_resolver<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        callback: Bound<'py, PyAny>,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        slf.service_target_callback = Some(PyCallback::new(callback, "service_target_resolver")?);
+        Ok(slf)
+    }
+
     /// Headers sent with every request.
     fn default_headers(
         mut slf: PyRefMut<'_, Self>,
@@ -362,37 +412,56 @@ impl PyClientBuilder {
         // per-provider table folds into one closure that dispatches on the
         // adapter and falls through — returning the target unchanged, or
         // `None` for auth — for adapters this client was not told about.
-        if self.providers.values().any(|entry| entry.auth.is_some()) {
-            let auth_by_kind: HashMap<AdapterKind, AuthData> = self
-                .providers
-                .iter()
-                .filter_map(|(kind, entry)| entry.auth.clone().map(|auth| (*kind, auth)))
-                .collect();
+        let auth_by_kind: HashMap<AdapterKind, AuthData> = self
+            .providers
+            .iter()
+            .filter_map(|(kind, entry)| entry.auth.clone().map(|auth| (*kind, auth)))
+            .collect();
+        if !auth_by_kind.is_empty() || self.auth_callback.is_some() {
+            let callback = self.auth_callback.clone().map(auth_resolver_fn);
             builder = builder.with_auth_resolver(AuthResolver::from_resolver_fn(
                 move |model_iden: ModelIden| {
+                    // The callback gets first refusal so it can override a
+                    // configured credential; `None` means "not mine".
+                    if let Some(callback) = callback.as_ref()
+                        && let Some(auth) = callback(model_iden.clone())?
+                    {
+                        return Ok(Some(auth));
+                    }
                     Ok(auth_by_kind.get(&model_iden.adapter_kind).cloned())
                 },
             ));
         }
 
-        if self
+        let endpoint_by_kind: HashMap<AdapterKind, Endpoint> = self
             .providers
-            .values()
-            .any(|entry| entry.endpoint.is_some())
-        {
-            let endpoint_by_kind: HashMap<AdapterKind, Endpoint> = self
-                .providers
-                .iter()
-                .filter_map(|(kind, entry)| entry.endpoint.clone().map(|ep| (*kind, ep)))
-                .collect();
-            builder = builder.with_service_target_resolver(
-                ServiceTargetResolver::from_resolver_fn(move |mut target: genai::ServiceTarget| {
-                    if let Some(endpoint) = endpoint_by_kind.get(&target.model.adapter_kind) {
-                        target.endpoint = endpoint.clone();
-                    }
-                    Ok(target)
-                }),
-            );
+            .iter()
+            .filter_map(|(kind, entry)| entry.endpoint.clone().map(|ep| (*kind, ep)))
+            .collect();
+        if !endpoint_by_kind.is_empty() || self.service_target_callback.is_some() {
+            // Declarative endpoints are applied first; the callback then
+            // sees the result and has the final say.
+            let apply_declarative = move |mut target: genai::ServiceTarget| {
+                if let Some(endpoint) = endpoint_by_kind.get(&target.model.adapter_kind) {
+                    target.endpoint = endpoint.clone();
+                }
+                target
+            };
+            let resolver =
+                match self.service_target_callback.clone() {
+                    Some(callback) => ServiceTargetResolver::from_resolver_fn(
+                        service_target_resolver_fn(callback, apply_declarative),
+                    ),
+                    None => ServiceTargetResolver::from_resolver_fn(
+                        move |target: genai::ServiceTarget| Ok(apply_declarative(target)),
+                    ),
+                };
+            builder = builder.with_service_target_resolver(resolver);
+        }
+
+        if let Some(callback) = self.model_mapper_callback.clone() {
+            builder =
+                builder.with_model_mapper(ModelMapper::from_mapper_fn(model_mapper_fn(callback)));
         }
 
         Ok(PyClient {

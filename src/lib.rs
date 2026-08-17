@@ -12,6 +12,7 @@ mod chat;
 mod client;
 mod convert;
 mod errors;
+mod resolvers;
 mod response;
 mod target;
 
