@@ -34,6 +34,7 @@ fn _genai_pyo3(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<chat::PyJsonSpec>()?;
     module.add_class::<chat::PyTool>()?;
     module.add_class::<chat::PyToolCall>()?;
+    module.add_class::<chat::PyBinary>()?;
     module.add_class::<response::PyUsage>()?;
     module.add_class::<response::PyPromptTokensDetails>()?;
     module.add_class::<response::PyCompletionTokensDetails>()?;

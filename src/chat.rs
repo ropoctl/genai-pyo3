@@ -1,8 +1,9 @@
 //! Request-side pyclasses: messages, requests, tools, and options.
 
 use genai::chat::{
-    ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat, ChatRole, JsonSpec, MessageOptions,
-    ServiceTier, Tool, ToolCall, ToolChoice, ToolResponse, Verbosity,
+    Binary, BinarySource, ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat, ChatRole,
+    JsonSpec, MessageOptions, ServiceTier, Tool, ToolCall, ToolChoice, ToolConfig, ToolResponse,
+    Verbosity, WebSearchConfig,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -11,8 +12,9 @@ use pythonize::depythonize;
 use std::collections::HashMap;
 
 use crate::convert::{
-    coerce_custom_format_to_json_string, coerce_schema_to_json_string, json_value_to_py,
-    normalize_chat_request_value, parse_cache_control, parse_chat_role, parse_reasoning_effort,
+    coerce_custom_format_to_json_string, coerce_json_to_string, coerce_schema_to_json_string,
+    json_value_to_py, lowercase_content_part_keys, normalize_chat_request_value,
+    normalize_content_parts, parse_cache_control, parse_chat_role, parse_reasoning_effort,
     raw_content_json_to_message_content, validate_role,
 };
 
@@ -49,6 +51,9 @@ pub(crate) struct PyChatMessage {
     /// adapters that support custom content.
     #[pyo3(get)]
     pub(crate) raw_content_json: Option<String>,
+    /// Mixed content — text plus images, PDFs, audio — stored in the serde
+    /// form. When present it replaces `content`, which can only carry text.
+    pub(crate) content_parts_json: Option<String>,
 }
 
 #[pymethods]
@@ -56,33 +61,55 @@ impl PyChatMessage {
     #[new]
     #[pyo3(signature = (
         role,
-        content,
+        content = None,
         tool_calls = None,
         tool_response_call_id = None,
         cache_control = None,
         thought_signatures = None,
         raw_content = None,
+        content_parts = None,
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         role: String,
-        content: String,
+        content: Option<String>,
         tool_calls: Option<Vec<PyToolCall>>,
         tool_response_call_id: Option<String>,
         cache_control: Option<String>,
         thought_signatures: Option<Vec<String>>,
         raw_content: Option<Bound<'_, PyAny>>,
+        content_parts: Option<Vec<Bound<'_, PyAny>>>,
     ) -> PyResult<Self> {
         validate_role(&role)?;
         let raw_content_json = raw_content.map(coerce_schema_to_json_string).transpose()?;
+        let content_parts_json = content_parts.map(coerce_content_parts).transpose()?;
+        if content.is_none() && content_parts_json.is_none() && raw_content_json.is_none() {
+            return Err(PyValueError::new_err(
+                "ChatMessage needs content, content_parts, or raw_content",
+            ));
+        }
         Ok(Self {
             role,
-            content,
+            content: content.unwrap_or_default(),
             tool_calls,
             tool_response_call_id,
             cache_control,
             thought_signatures,
             raw_content_json,
+            content_parts_json,
         })
+    }
+
+    /// The mixed-content parts, as the lowercase-keyed dict form.
+    #[getter]
+    fn content_parts<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let Some(raw) = self.content_parts_json.as_deref() else {
+            return Ok(py.None().into_bound(py));
+        };
+        let mut value = serde_json::from_str::<serde_json::Value>(raw)
+            .map_err(|err| PyRuntimeError::new_err(format!("invalid content parts: {err}")))?;
+        lowercase_content_part_keys(&mut value);
+        Ok(json_value_to_py(py, &value)?.into_bound(py))
     }
 
     fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
@@ -116,7 +143,95 @@ impl PyChatMessage {
             }
             None => dict.set_item("raw_content", py.None())?,
         }
+        dict.set_item("content_parts", self.content_parts(py)?)?;
         Ok(dict.into_any())
+    }
+}
+
+/// A binary attachment — an image, a PDF, an audio clip.
+///
+/// Providers accept these as base64 payloads almost universally, and as
+/// URLs only sometimes; `from_url` is there for the ones that do.
+#[pyclass(name = "Binary", frozen, from_py_object)]
+#[derive(Clone)]
+pub(crate) struct PyBinary {
+    pub(crate) inner: Binary,
+}
+
+#[pymethods]
+impl PyBinary {
+    /// Wrap already-encoded base64 bytes.
+    #[staticmethod]
+    #[pyo3(signature = (content_type, content, name = None))]
+    fn from_base64(content_type: String, content: String, name: Option<String>) -> Self {
+        Self {
+            inner: Binary::from_base64(content_type, content, name),
+        }
+    }
+
+    /// Reference a remote file. Only some providers fetch URLs; the rest
+    /// need the bytes inline.
+    #[staticmethod]
+    #[pyo3(signature = (content_type, url, name = None))]
+    fn from_url(content_type: String, url: String, name: Option<String>) -> Self {
+        Self {
+            inner: Binary::from_url(content_type, url, name),
+        }
+    }
+
+    /// Read a local file, guessing its MIME type from the extension and
+    /// base64-encoding the contents.
+    #[staticmethod]
+    fn from_path(path: String) -> PyResult<Self> {
+        Binary::from_file(&path)
+            .map(|inner| Self { inner })
+            .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
+    #[getter]
+    fn content_type(&self) -> String {
+        self.inner.content_type.clone()
+    }
+
+    #[getter]
+    fn name(&self) -> Option<String> {
+        self.inner.name.clone()
+    }
+
+    /// Where the bytes come from: `"base64"` or `"url"`.
+    #[getter]
+    fn source_kind(&self) -> &'static str {
+        match self.inner.source {
+            BinarySource::Base64(_) => "base64",
+            BinarySource::Url(_) => "url",
+        }
+    }
+
+    #[getter]
+    fn is_image(&self) -> bool {
+        self.inner.is_image()
+    }
+
+    #[getter]
+    fn is_pdf(&self) -> bool {
+        self.inner.is_pdf()
+    }
+
+    /// The content-part dict form, ready to drop into `content_parts`.
+    fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let value = serde_json::to_value(&self.inner)
+            .map_err(|err| PyRuntimeError::new_err(format!("serialize binary: {err}")))?;
+        let part = serde_json::json!({ "binary": value });
+        Ok(json_value_to_py(py, &part)?.into_bound(py))
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Binary(content_type={:?}, source={:?}, name={:?})",
+            self.inner.content_type,
+            self.source_kind(),
+            self.inner.name,
+        )
     }
 }
 
@@ -174,7 +289,7 @@ impl PyChatRequest {
 }
 
 #[pyclass(name = "Tool", from_py_object)]
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct PyTool {
     #[pyo3(get, set)]
     pub(crate) name: String,
@@ -188,28 +303,128 @@ pub(crate) struct PyTool {
     /// Provider-native freeform custom-tool format, stored internally as JSON.
     /// Exposed to Python as a JSON-compatible value through the custom getter.
     pub(crate) custom_format_json: Option<String>,
+    /// Ask the provider to enforce the schema on tool-call arguments
+    /// (OpenAI and Anthropic constrained decoding).
+    #[pyo3(get, set)]
+    pub(crate) strict: Option<bool>,
+    /// Prompt-cache hint. On Anthropic, setting this on the *last* tool
+    /// caches the whole tool-list prefix.
+    #[pyo3(get, set)]
+    pub(crate) cache_control: Option<String>,
+    /// Anthropic fine-grained tool streaming: stream tool-call input
+    /// token-by-token instead of buffering the whole JSON server-side.
+    #[pyo3(get, set)]
+    pub(crate) eager_input_streaming: Option<bool>,
+    /// Provider-specific tool configuration, stored internally as JSON.
+    pub(crate) config_json: Option<String>,
+    /// True when this is the provider's built-in web-search tool rather
+    /// than a user-defined function.
+    pub(crate) is_web_search: bool,
 }
 
 #[pymethods]
 impl PyTool {
     #[new]
-    #[pyo3(signature = (name, description = None, schema_json = None, custom_format = None))]
+    #[pyo3(signature = (
+        name,
+        description = None,
+        schema_json = None,
+        custom_format = None,
+        *,
+        strict = None,
+        cache_control = None,
+        eager_input_streaming = None,
+        config = None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
         description: Option<String>,
         schema_json: Option<Bound<'_, PyAny>>,
         custom_format: Option<Bound<'_, PyAny>>,
+        strict: Option<bool>,
+        cache_control: Option<String>,
+        eager_input_streaming: Option<bool>,
+        config: Option<Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let schema_json = schema_json.map(coerce_schema_to_json_string).transpose()?;
         let custom_format_json = custom_format
             .map(coerce_custom_format_to_json_string)
             .transpose()?;
+        let config_json = config
+            .map(|value| coerce_json_to_string(value, "config"))
+            .transpose()?;
+        if let Some(value) = cache_control.as_deref() {
+            parse_cache_control_strict(value)?;
+        }
         Ok(Self {
             name,
             description,
             schema_json,
             custom_format_json,
+            strict,
+            cache_control,
+            eager_input_streaming,
+            config_json,
+            is_web_search: false,
         })
+    }
+
+    /// The provider's built-in web-search tool.
+    ///
+    /// Not a function you implement — the provider runs the search itself
+    /// (Google Search on Gemini, the web-search tool on OpenAI Responses),
+    /// so there is no schema and no tool response to send back.
+    #[staticmethod]
+    #[pyo3(signature = (*, max_uses = None, allowed_domains = None, blocked_domains = None))]
+    fn web_search(
+        max_uses: Option<u32>,
+        allowed_domains: Option<Vec<String>>,
+        blocked_domains: Option<Vec<String>>,
+    ) -> PyResult<Self> {
+        if allowed_domains.is_some() && blocked_domains.is_some() {
+            // Providers reject the combination, so catch it here rather
+            // than letting it become a remote 400.
+            return Err(PyValueError::new_err(
+                "web_search accepts allowed_domains or blocked_domains, not both",
+            ));
+        }
+        let config = serde_json::json!({
+            "max_uses": max_uses,
+            "allowed_domains": allowed_domains,
+            "blocked_domains": blocked_domains,
+        });
+        Ok(Self {
+            name: "WebSearch".to_string(),
+            description: None,
+            schema_json: None,
+            custom_format_json: None,
+            strict: None,
+            cache_control: None,
+            eager_input_streaming: None,
+            config_json: Some(config.to_string()),
+            is_web_search: true,
+        })
+    }
+
+    /// True for the built-in web-search tool.
+    #[getter]
+    fn is_builtin(&self) -> bool {
+        self.is_web_search
+    }
+
+    /// Provider-specific configuration as a Python value.
+    #[getter]
+    fn config(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        self.config_json
+            .as_deref()
+            .map(|raw| {
+                let value = serde_json::from_str(raw).map_err(|err| {
+                    PyRuntimeError::new_err(format!("invalid tool config JSON: {err}"))
+                })?;
+                json_value_to_py(py, &value)
+            })
+            .transpose()
     }
 
     #[setter]
@@ -527,11 +742,24 @@ impl TryFrom<PyChatMessage> for ChatMessage {
         let thought_signatures = message.thought_signatures.clone();
 
         let mut chat_message = match role {
+            // Structured content wins over the plain `content` string:
+            // raw_content first (provider-native blocks), then the mixed
+            // text/binary parts, then the text-shaped forms.
             _ if message.raw_content_json.is_some() => {
                 let raw_content_json = message.raw_content_json.as_deref().unwrap_or("null");
                 ChatMessage {
                     role,
                     content: raw_content_json_to_message_content(raw_content_json)?,
+                    options: None,
+                }
+            }
+            _ if message.content_parts_json.is_some() => {
+                let raw = message.content_parts_json.as_deref().unwrap_or("[]");
+                ChatMessage {
+                    role,
+                    content: serde_json::from_str(raw).map_err(|err| {
+                        PyValueError::new_err(format!("invalid content parts: {err}"))
+                    })?,
                     options: None,
                 }
             }
@@ -618,7 +846,11 @@ impl TryFrom<PyChatRequest> for ChatRequest {
 
 impl From<PyTool> for Tool {
     fn from(py_tool: PyTool) -> Self {
-        let mut tool = Tool::new(py_tool.name);
+        let mut tool = if py_tool.is_web_search {
+            Tool::new_web_search()
+        } else {
+            Tool::new(py_tool.name)
+        };
         if let Some(description) = py_tool.description {
             tool = tool.with_description(description);
         }
@@ -633,6 +865,35 @@ impl From<PyTool> for Tool {
             .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
         {
             tool = tool.with_custom_format(custom_format);
+        }
+        if let Some(strict) = py_tool.strict {
+            tool = tool.with_strict(strict);
+        }
+        if let Some(eager) = py_tool.eager_input_streaming {
+            tool = tool.with_eager_input_streaming(eager);
+        }
+        if let Some(cache_control) = py_tool
+            .cache_control
+            .as_deref()
+            .and_then(parse_cache_control)
+        {
+            tool = tool.with_cache_control(cache_control);
+        }
+        if let Some(config) = py_tool
+            .config_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        {
+            // The built-in tools take their own typed config; everything
+            // else is passed through as an opaque provider blob.
+            let config = if py_tool.is_web_search {
+                serde_json::from_value::<WebSearchConfig>(config)
+                    .map(ToolConfig::WebSearch)
+                    .unwrap_or_else(|_| ToolConfig::Custom(serde_json::Value::Null))
+            } else {
+                ToolConfig::Custom(config)
+            };
+            tool = tool.with_config(config);
         }
         tool
     }
@@ -739,6 +1000,35 @@ fn parse_cache_control_strict(raw: &str) -> PyResult<()> {
     })
 }
 
+/// Coerce a heterogeneous `content_parts` list into the serde form.
+///
+/// Accepts, per element: a `str` (becomes a text part), a `Binary`, or an
+/// already-shaped content-part dict such as `{"text": "..."}`.
+fn coerce_content_parts(parts: Vec<Bound<'_, PyAny>>) -> PyResult<String> {
+    let mut values = Vec::with_capacity(parts.len());
+    for (index, part) in parts.into_iter().enumerate() {
+        if let Ok(text) = part.extract::<String>() {
+            values.push(serde_json::json!({ "text": text }));
+            continue;
+        }
+        if let Ok(binary) = part.extract::<PyBinary>() {
+            let value = serde_json::to_value(&binary.inner)
+                .map_err(|err| PyValueError::new_err(format!("content_parts[{index}]: {err}")))?;
+            values.push(serde_json::json!({ "binary": value }));
+            continue;
+        }
+        let value: serde_json::Value = depythonize(&part).map_err(|err| {
+            PyValueError::new_err(format!(
+                "content_parts[{index}] must be a str, a Binary, or a content-part dict: {err}"
+            ))
+        })?;
+        values.push(value);
+    }
+    normalize_content_parts(&mut values, "content_parts")?;
+    serde_json::to_string(&values)
+        .map_err(|err| PyValueError::new_err(format!("failed to serialize content_parts: {err}")))
+}
+
 /// Accept either a `PyChatRequest` pyclass instance or any Python object that
 /// depythonizes into a `serde_json::Value` matching the rust-genai
 /// `ChatRequest` serde shape.
@@ -792,6 +1082,10 @@ pub(crate) fn coerce_chat_options(obj: Option<Bound<'_, PyAny>>) -> PyResult<Opt
 /// "missing field `stop_sequences`". Starting from the default and layering
 /// the caller's keys on top keeps the dict form genuinely partial, and does
 /// so for any other non-defaulted field upstream may add.
+///
+/// The specific `stop_sequences` case is fixed upstream by
+/// jeremychone/rust-genai#285; this stays regardless, since it also covers
+/// whatever field is added next without a default.
 fn fill_chat_options_defaults(value: serde_json::Value) -> serde_json::Value {
     let Some(provided) = value.as_object() else {
         return value;
@@ -825,6 +1119,7 @@ mod tests {
             description: Some("Emit the constrained token".to_string()),
             schema_json: None,
             custom_format_json: Some(expected.to_string()),
+            ..PyTool::default()
         };
 
         let tool = Tool::from(py_tool);
