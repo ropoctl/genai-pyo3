@@ -45,6 +45,19 @@ class FakeProvider:
 
     def __init__(self) -> None:
         self.reply = Reply()
+        self.embeddings_reply = Reply(
+            body=json.dumps(
+                {
+                    "object": "list",
+                    "model": "fake-embed",
+                    "data": [
+                        {"object": "embedding", "index": 0, "embedding": [0.1, 0.2, 0.3]},
+                        {"object": "embedding", "index": 1, "embedding": [0.4, 0.5, 0.6]},
+                    ],
+                    "usage": {"prompt_tokens": 5, "total_tokens": 5},
+                }
+            )
+        )
         self.model_list_reply = Reply(
             body=json.dumps(
                 {
@@ -88,7 +101,7 @@ class FakeProvider:
                         "body": json.loads(raw) if raw else None,
                     }
                 )
-                reply = provider.reply
+                reply = self._embeddings_reply() or provider.reply
                 payload = reply.body.encode()
                 self.send_response(reply.status)
                 self.send_header("content-type", reply.content_type)
@@ -97,6 +110,11 @@ class FakeProvider:
                     self.send_header(name, value)
                 self.end_headers()
                 self.wfile.write(payload)
+
+            def _embeddings_reply(self) -> Reply | None:
+                if not self.path.endswith("/embeddings"):
+                    return None
+                return provider.embeddings_reply
 
             def do_GET(self) -> None:  # noqa: N802 - stdlib naming
                 provider.requests.append(

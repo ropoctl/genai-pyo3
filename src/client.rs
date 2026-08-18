@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use crate::chat::{coerce_chat_options, coerce_chat_request};
 use crate::convert::build_header_map;
+use crate::embed::{coerce_embed_options, to_py_embed_response};
 use crate::errors::to_py_err;
 use crate::resolvers::{PyCallback, auth_resolver_fn, model_mapper_fn, service_target_resolver_fn};
 use crate::response::{
@@ -166,6 +167,54 @@ impl PyClient {
                 .all_model_names(kind, (endpoint, auth))
                 .await
                 .map_err(to_py_err)
+        })
+    }
+
+    /// Embed a single string.
+    #[pyo3(signature = (model, input, options = None))]
+    fn aembed<'py>(
+        &self,
+        py: Python<'py>,
+        model: ModelLike,
+        input: String,
+        options: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let embed_options = coerce_embed_options(options)?;
+        let model_spec = model.into_spec();
+        let client = self.inner.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let response = client
+                .embed(model_spec, input, embed_options.as_ref())
+                .await
+                .map_err(to_py_err)?;
+            Ok(to_py_embed_response(response))
+        })
+    }
+
+    /// Embed several strings in one request.
+    ///
+    /// Providers do not guarantee response order, so each `Embedding`
+    /// carries the `index` of the input it belongs to; `vectors` sorts by
+    /// it for you.
+    #[pyo3(signature = (model, inputs, options = None))]
+    fn aembed_batch<'py>(
+        &self,
+        py: Python<'py>,
+        model: ModelLike,
+        inputs: Vec<String>,
+        options: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let embed_options = coerce_embed_options(options)?;
+        let model_spec = model.into_spec();
+        let client = self.inner.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let response = client
+                .embed_batch(model_spec, inputs, embed_options.as_ref())
+                .await
+                .map_err(to_py_err)?;
+            Ok(to_py_embed_response(response))
         })
     }
 

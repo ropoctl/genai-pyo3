@@ -6,11 +6,13 @@
 //! - [`chat`]     — request-side pyclasses (messages, requests, tools, options)
 //! - [`response`] — response-side pyclasses (usage, responses, streaming)
 //! - [`target`]   — routing types (adapter, model, endpoint, auth, target)
+//! - [`embed`]    — embedding pyclasses
 //! - [`client`]   — the `Client` pyclass and its construction helpers
 
 mod chat;
 mod client;
 mod convert;
+mod embed;
 mod errors;
 mod resolvers;
 mod response;
@@ -43,5 +45,8 @@ fn _genai_pyo3(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<response::PyStreamEnd>()?;
     module.add_class::<response::PyChatStreamEvent>()?;
     module.add_class::<response::PyChatStream>()?;
+    module.add_class::<embed::PyEmbedOptions>()?;
+    module.add_class::<embed::PyEmbedResponse>()?;
+    module.add_class::<embed::PyEmbedding>()?;
     Ok(())
 }
