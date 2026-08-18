@@ -37,7 +37,7 @@ async def main() -> None:
         .build()
     )
 
-    print("fast ->", client.resolve_target("fast").model.model_name)
+    print("fast ->", client.resolve_service_target("fast").model.model_name)
 
     request = ChatRequest(messages=[ChatMessage("user", "Say hello in one short sentence")])
     response = await client.achat("fast", request)

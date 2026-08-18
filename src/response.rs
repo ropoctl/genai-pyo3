@@ -1,6 +1,7 @@
 //! Response-side pyclasses: usage, chat responses, and streaming.
 
 use futures::StreamExt;
+use genai::ModelIden;
 use genai::chat::{
     CacheCreationDetails, ChatStream, ChatStreamEvent, CompletionTokensDetails,
     PromptTokensDetails, StopReason, StreamEnd, Usage,
@@ -11,9 +12,10 @@ use pyo3::types::PyDict;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::chat::{PyToolCall, py_tool_calls_to_py, to_py_tool_call};
+use crate::chat::{PyChatMessage, PyToolCall, py_tool_calls_to_py, to_py_tool_call};
 use crate::convert::{coerce_message_content, json_value_to_py, lowercase_content_part_keys};
 use crate::errors::to_py_err;
+use crate::target::{PyModelIden, parse_adapter_kind};
 
 #[pyclass(name = "CacheCreationDetails", from_py_object)]
 #[derive(Clone, Default)]
@@ -400,6 +402,73 @@ impl PyChatResponse {
             .collect()
     }
 
+    /// The resolved model, spelled as rust-genai spells it. May differ from
+    /// what was requested if a model mapper rewrote it.
+    #[getter]
+    fn model_iden(&self) -> PyResult<PyModelIden> {
+        Ok(PyModelIden {
+            inner: ModelIden::new(
+                parse_adapter_kind(&self.model_adapter_kind)?,
+                self.model_name.clone(),
+            ),
+        })
+    }
+
+    /// The model the provider reported serving, which can differ from the
+    /// one requested (`gpt-4o` answered by `gpt-4o-2024-08-06`).
+    #[getter]
+    fn provider_model_iden(&self) -> PyResult<PyModelIden> {
+        Ok(PyModelIden {
+            inner: ModelIden::new(
+                parse_adapter_kind(&self.provider_model_adapter_kind)?,
+                self.provider_model_name.clone(),
+            ),
+        })
+    }
+
+    /// Encrypted reasoning / thought-signature parts in the response
+    /// content, in order. Also covers stream-level signatures collected by
+    /// `achat_via_stream`.
+    #[getter]
+    fn thought_signatures(&self) -> Vec<String> {
+        self.inner_content
+            .thought_signatures()
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Build the assistant turn to send back when continuing after a tool
+    /// call, keeping the canonical response content intact.
+    ///
+    /// The flattened Python fields cannot express a signature paired with a
+    /// specific reasoning block, and providers that require signed thinking
+    /// reject a continuation that loses that pairing — so the whole
+    /// `MessageContent` rides along instead of being rebuilt from parts.
+    fn to_assistant_message_for_tool_use(
+        &self,
+        py: Python<'_>,
+    ) -> PyResult<Option<Py<PyChatMessage>>> {
+        let tool_calls = self.tool_calls()?;
+        if tool_calls.is_empty() {
+            return Ok(None);
+        }
+        let thought_signatures = self.thought_signatures();
+        let message = PyChatMessage {
+            role: "assistant".to_string(),
+            content: self.inner_content.joined_texts().unwrap_or_default(),
+            tool_calls: Some(tool_calls),
+            tool_response_call_id: None,
+            cache_control: None,
+            thought_signatures: (!thought_signatures.is_empty()).then_some(thought_signatures),
+            reasoning_content: self.reasoning_content.clone(),
+            raw_content_json: None,
+            content_parts_json: None,
+            normalized_content: Some(self.inner_content.clone()),
+        };
+        Py::new(py, message).map(Some)
+    }
+
     fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let dict = PyDict::new(py);
         dict.set_item("content", self.content(py)?)?;
@@ -413,6 +482,7 @@ impl PyChatResponse {
         }
         dict.set_item("texts", self.texts())?;
         dict.set_item("tool_calls", py_tool_calls_to_py(py, &self.tool_calls()?)?)?;
+        dict.set_item("thought_signatures", self.thought_signatures())?;
         match &self.reasoning_content {
             Some(reasoning) => dict.set_item("reasoning_content", reasoning.clone())?,
             None => dict.set_item("reasoning_content", py.None())?,
@@ -818,4 +888,91 @@ fn to_py_stream_event(py: Python<'_>, event: ChatStreamEvent) -> PyResult<Py<PyC
             end,
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use genai::chat::{ChatMessage, ContentPart, MessageContent, ToolCall};
+    use pyo3::Python;
+    use serde_json::json;
+
+    #[test]
+    fn chat_response_exposes_all_content_thought_signatures() {
+        let response = PyChatResponse {
+            inner_content: MessageContent::from_parts(vec![
+                ContentPart::ThoughtSignature("sig-one".to_string()),
+                ContentPart::Text("answer".to_string()),
+                ContentPart::ThoughtSignature("sig-two".to_string()),
+            ]),
+            reasoning_content: Some("visible reasoning".to_string()),
+            model_adapter_kind: "anthropic".to_string(),
+            model_name: "model".to_string(),
+            provider_model_adapter_kind: "anthropic".to_string(),
+            provider_model_name: "model".to_string(),
+            usage: PyUsage {
+                prompt_tokens: None,
+                completion_tokens: None,
+                total_tokens: None,
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
+            },
+            response_id: None,
+            stop_reason: None,
+            stop_reason_raw: None,
+            captured_raw_body: None,
+        };
+
+        assert_eq!(response.thought_signatures(), ["sig-one", "sig-two"]);
+    }
+
+    #[test]
+    fn response_tool_handoff_preserves_multiple_reasoning_signature_pairs() {
+        let response = PyChatResponse {
+            inner_content: MessageContent::from_parts(vec![
+                ContentPart::ThoughtSignature("sig-one".to_string()),
+                ContentPart::ReasoningContent("reason-one".to_string()),
+                ContentPart::ThoughtSignature("sig-two".to_string()),
+                ContentPart::ReasoningContent("reason-two".to_string()),
+                ContentPart::ToolCall(ToolCall {
+                    call_id: "call-1".to_string(),
+                    fn_name: "lookup".to_string(),
+                    fn_arguments: json!({"query": "status"}),
+                    thought_signatures: Some(vec!["sig-one".to_string(), "sig-two".to_string()]),
+                }),
+            ]),
+            reasoning_content: Some("reason-one\nreason-two".to_string()),
+            model_adapter_kind: "anthropic".to_string(),
+            model_name: "model".to_string(),
+            provider_model_adapter_kind: "anthropic".to_string(),
+            provider_model_name: "model".to_string(),
+            usage: PyUsage {
+                prompt_tokens: None,
+                completion_tokens: None,
+                total_tokens: None,
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
+            },
+            response_id: None,
+            stop_reason: None,
+            stop_reason_raw: None,
+            captured_raw_body: None,
+        };
+
+        Python::attach(|py| {
+            let message = response
+                .to_assistant_message_for_tool_use(py)
+                .expect("build Python handoff")
+                .expect("tool-use handoff");
+            let message = message.borrow(py).clone();
+            let message = ChatMessage::try_from(message).expect("convert canonical handoff");
+
+            assert_eq!(message.content.thought_signatures(), ["sig-one", "sig-two"]);
+            assert_eq!(
+                message.content.reasoning_contents(),
+                ["reason-one", "reason-two"]
+            );
+            assert_eq!(message.content.tool_calls().len(), 1);
+        });
+    }
 }

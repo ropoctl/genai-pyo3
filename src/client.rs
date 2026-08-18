@@ -101,7 +101,7 @@ impl PyClient {
     /// resulting `ServiceTarget`. Useful for validating configuration at
     /// startup and for answering "which provider is this actually hitting?"
     /// without spending a request.
-    fn aresolve_target<'py>(
+    fn aresolve_service_target<'py>(
         &self,
         py: Python<'py>,
         model: ModelLike,
@@ -118,8 +118,13 @@ impl PyClient {
         })
     }
 
-    /// Blocking form of [`aresolve_target`](Self::aresolve_target).
-    fn resolve_target(&self, py: Python<'_>, model: ModelLike) -> PyResult<PyServiceTarget> {
+    /// Blocking form of
+    /// [`aresolve_service_target`](Self::aresolve_service_target).
+    fn resolve_service_target(
+        &self,
+        py: Python<'_>,
+        model: ModelLike,
+    ) -> PyResult<PyServiceTarget> {
         let target =
             block_on_shared_runtime(py, self.inner.resolve_service_target(model.into_spec()))?
                 .map_err(to_py_err)?;
@@ -141,7 +146,7 @@ impl PyClient {
     /// `endpoint` and `auth` override the client's configuration for this
     /// lookup only.
     #[pyo3(signature = (adapter_kind, *, endpoint = None, auth = None))]
-    fn alist_models<'py>(
+    fn aall_model_names<'py>(
         &self,
         py: Python<'py>,
         adapter_kind: AdapterKindLike,
@@ -328,20 +333,32 @@ impl PyClient {
             let model_iden = stream_res.model_iden.clone();
             let mut stream = stream_res.stream;
             let mut end: Option<StreamEnd> = None;
+            let mut streamed_thought_signatures = Vec::new();
             while let Some(event) = stream.next().await {
                 let event = event.map_err(to_py_err)?;
-                if let ChatStreamEvent::End(e) = event {
-                    end = Some(e);
-                    break;
+                match event {
+                    ChatStreamEvent::ThoughtSignatureChunk(chunk) => {
+                        streamed_thought_signatures.push(chunk.content);
+                    }
+                    ChatStreamEvent::End(e) => {
+                        end = Some(e);
+                        break;
+                    }
+                    _ => {}
                 }
             }
 
             let end = end.ok_or_else(|| {
                 PyRuntimeError::new_err("stream ended without a terminal End event")
             })?;
-            let content = end
+            let mut content = end
                 .captured_content
                 .unwrap_or_else(genai::chat::MessageContent::default);
+            let streamed_thought_signatures = normalize_streamed_thought_signatures(
+                &model_iden.adapter_kind,
+                streamed_thought_signatures,
+            );
+            preserve_streamed_thought_signatures(&mut content, streamed_thought_signatures);
             let reasoning_content = end.captured_reasoning_content;
             let usage = end.captured_usage.unwrap_or_default();
             let response_id = end.captured_response_id;
@@ -612,16 +629,7 @@ impl PyClientBuilder {
         } else {
             Some(DEFAULT_CONNECT_TIMEOUT_SECONDS)
         };
-        if let Some(web_config) = web_config_from_overrides(
-            connect_timeout_seconds,
-            self.read_timeout_seconds,
-            self.total_timeout_seconds,
-            self.default_headers.clone(),
-            self.proxy_url.as_deref(),
-            &self.proxy_scheme,
-            self.gzip,
-            self.tcp_nodelay,
-        )? {
+        if let Some(web_config) = self.web_config(connect_timeout_seconds)? {
             builder = builder.with_web_config(web_config);
         }
 
@@ -734,56 +742,131 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-fn web_config_from_overrides(
-    connect_timeout_seconds: Option<f64>,
-    read_timeout_seconds: Option<f64>,
-    timeout_seconds: Option<f64>,
-    default_headers: Option<HashMap<String, String>>,
-    proxy_url: Option<&str>,
-    proxy_scheme: &str,
-    gzip: Option<bool>,
-    tcp_nodelay: Option<bool>,
-) -> PyResult<Option<genai::WebConfig>> {
-    if connect_timeout_seconds.is_none()
-        && read_timeout_seconds.is_none()
-        && timeout_seconds.is_none()
-        && proxy_url.is_none()
-        && gzip.is_none()
-        && tcp_nodelay.is_none()
-        && default_headers
-            .as_ref()
-            .is_none_or(|headers| headers.is_empty())
-    {
-        return Ok(None);
+/// Keep stream-level reasoning signatures that never reached `StreamEnd`.
+///
+/// Some adapters emit encrypted reasoning signatures as stream chunks
+/// without copying them into the terminal event. Signatures already
+/// captured by `StreamEnd` win; otherwise the streamed ones are retained in
+/// the response content, since losing them breaks the next turn on
+/// providers that require signed thinking.
+pub(crate) fn preserve_streamed_thought_signatures(
+    content: &mut genai::chat::MessageContent,
+    streamed_thought_signatures: Vec<String>,
+) {
+    if content.thought_signatures().is_empty() && !streamed_thought_signatures.is_empty() {
+        content.extend_front(
+            streamed_thought_signatures
+                .into_iter()
+                .map(genai::chat::ContentPart::ThoughtSignature),
+        );
     }
-    let mut web_config = genai::WebConfig::default();
-    if let Some(secs) = connect_timeout_seconds {
-        web_config = web_config.with_connect_timeout(Duration::from_secs_f64(secs));
+}
+
+/// Reassemble streamed signature deltas into the units a provider expects.
+///
+/// The Anthropic streamer exposes signature deltas without block boundaries
+/// and omits terminal signatures. An Anthropic thinking response uses one
+/// signed thinking block, so the deltas concatenate into a single logical
+/// signature. Other adapters already emit whole units and pass through.
+pub(crate) fn normalize_streamed_thought_signatures(
+    adapter_kind: &AdapterKind,
+    streamed_chunks: Vec<String>,
+) -> Vec<String> {
+    if matches!(adapter_kind, AdapterKind::Anthropic) && !streamed_chunks.is_empty() {
+        vec![streamed_chunks.concat()]
+    } else {
+        streamed_chunks
     }
-    if let Some(secs) = read_timeout_seconds {
-        web_config.read_timeout = Some(Duration::from_secs_f64(secs));
-    }
-    if let Some(secs) = timeout_seconds {
-        web_config = web_config.with_timeout(Duration::from_secs_f64(secs));
-    }
-    if let Some(headers) = default_headers
-        && !headers.is_empty()
-    {
-        web_config = web_config.with_default_headers(build_header_map(&headers)?);
-    }
-    if let Some(url) = proxy_url {
-        web_config = match proxy_scheme {
-            "http" => web_config.with_proxy_url(url),
-            "https" => web_config.with_https_proxy_url(url),
-            _ => web_config.with_all_proxy_url(url),
+}
+
+impl PyClientBuilder {
+    /// The `WebConfig` this builder describes, or `None` when it describes
+    /// nothing worth overriding.
+    fn web_config(
+        &self,
+        connect_timeout_seconds: Option<f64>,
+    ) -> PyResult<Option<genai::WebConfig>> {
+        let default_headers = self.default_headers.clone();
+        if connect_timeout_seconds.is_none()
+            && self.read_timeout_seconds.is_none()
+            && self.total_timeout_seconds.is_none()
+            && self.proxy_url.is_none()
+            && self.gzip.is_none()
+            && self.tcp_nodelay.is_none()
+            && default_headers
+                .as_ref()
+                .is_none_or(|headers| headers.is_empty())
+        {
+            return Ok(None);
         }
-        .map_err(|err| PyValueError::new_err(format!("invalid proxy url {url:?}: {err}")))?;
+        let mut web_config = genai::WebConfig::default();
+        if let Some(secs) = connect_timeout_seconds {
+            web_config = web_config.with_connect_timeout(Duration::from_secs_f64(secs));
+        }
+        if let Some(secs) = self.read_timeout_seconds {
+            web_config.read_timeout = Some(Duration::from_secs_f64(secs));
+        }
+        if let Some(secs) = self.total_timeout_seconds {
+            web_config = web_config.with_timeout(Duration::from_secs_f64(secs));
+        }
+        if let Some(headers) = default_headers
+            && !headers.is_empty()
+        {
+            web_config = web_config.with_default_headers(build_header_map(&headers)?);
+        }
+        if let Some(url) = self.proxy_url.as_deref() {
+            web_config = match self.proxy_scheme.as_str() {
+                "http" => web_config.with_proxy_url(url),
+                "https" => web_config.with_https_proxy_url(url),
+                _ => web_config.with_all_proxy_url(url),
+            }
+            .map_err(|err| PyValueError::new_err(format!("invalid proxy url {url:?}: {err}")))?;
+        }
+        if let Some(enabled) = self.gzip {
+            web_config.gzip = enabled;
+        }
+        if let Some(enabled) = self.tcp_nodelay {
+            web_config.tcp_nodelay = enabled;
+        }
+        Ok(Some(web_config))
     }
-    if let Some(enabled) = gzip {
-        web_config.gzip = enabled;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use genai::chat::{ContentPart, MessageContent};
+
+    #[test]
+    fn streamed_thought_signatures_fill_missing_stream_end_capture() {
+        let mut content = MessageContent::from_text("answer");
+        preserve_streamed_thought_signatures(
+            &mut content,
+            vec!["sig-one".to_string(), "sig-two".to_string()],
+        );
+
+        assert_eq!(content.thought_signatures(), ["sig-one", "sig-two"]);
+        assert_eq!(content.texts(), ["answer"]);
     }
-    if let Some(enabled) = tcp_nodelay {
-        web_config.tcp_nodelay = enabled;
+
+    #[test]
+    fn anthropic_streamed_signature_deltas_form_one_fallback_signature() {
+        let signatures = normalize_streamed_thought_signatures(
+            &AdapterKind::Anthropic,
+            vec!["signed-".to_string(), "fragmented".to_string()],
+        );
+
+        assert_eq!(signatures, ["signed-fragmented"]);
     }
-    Ok(Some(web_config))
+
+    #[test]
+    fn stream_end_thought_signatures_are_not_duplicated() {
+        let mut content = MessageContent::from_parts(vec![
+            ContentPart::ThoughtSignature("captured".to_string()),
+            ContentPart::Text("answer".to_string()),
+        ]);
+        preserve_streamed_thought_signatures(&mut content, vec!["streamed".to_string()]);
+
+        assert_eq!(content.thought_signatures(), ["captured"]);
+    }
 }

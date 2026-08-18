@@ -41,9 +41,31 @@ Client.with_api_key("openai", key, connect_timeout_seconds=None, read_timeout_se
 - **`ChatOptions.sanitize_schema`** is gone. `rust-genai` applies the
   adapter's schema normalization unconditionally, so the value was ignored
   and always read back as `True`.
-- **Errors** are now typed. `GenaiError` derives from `RuntimeError`, so
-  `except RuntimeError:` keeps working — but `except GenaiError:` and its
-  subclasses are what you want now.
+- **Errors gained subclasses, and one attribute was renamed.**
+  `GenaiError` still derives from `RuntimeError` and still carries `kind`,
+  `retryable`, `body`, and `headers` exactly as in 0.7.0.1 — but
+  `status_code` is now **`status`**, matching rust-genai's own
+  `Error::status()`. New: `retry_after` (parsed from `headers`) and
+  `model_iden`. And the class is now specific — `RateLimitError`,
+  `ServerError`, `AuthError`, ... — so you can branch on the class and log
+  the `kind`.
+
+  ```python
+  # before
+  except GenaiError as err:
+      if err.status_code == 429: ...
+
+  # after
+  except RateLimitError as err:
+      await asyncio.sleep(err.retry_after or 5.0)
+  ```
+
+- **Two methods renamed to match rust-genai**: `resolve_target` →
+  `resolve_service_target`, `alist_models` → `aall_model_names`. Both were
+  introduced in this release, so nothing published used the old names.
+
+- **`ChatResponse` gained `model_iden` / `provider_model_iden`** returning
+  `ModelIden`. The flat `model_name` / `model_adapter_kind` strings stay.
 
 ## What you can do that you could not before
 
@@ -93,10 +115,10 @@ if response.stop_reason == "max_tokens":
 ### Validate configuration at startup
 
 ```python
-target = client.resolve_target("flash")          # no request made
+target = client.resolve_service_target("flash")          # no request made
 print(target.endpoint.base_url, target.model.model_name)
 
-served = await client.alist_models("openai")     # what is loaded right now
+served = await client.aall_model_names("openai")     # what is loaded right now
 ```
 
 ### Vision and PDF input

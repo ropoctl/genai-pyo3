@@ -1,30 +1,47 @@
 [package]
 name = "genai-pyo3"
-version = "0.7.0-beta.19.dev0"
+version = "0.7.0"
 edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
 description = "Python bindings for rust-genai"
+exclude = ["opus5.json"]
 
 [lib]
 name = "_genai_pyo3"
 crate-type = ["cdylib"]
 
+[features]
+# `extension-module` tells pyo3 not to link libpython, which is right for the
+# shipped wheel but makes any test binary that touches the interpreter fail to
+# link. Keeping it behind a default feature lets `cargo test
+# --no-default-features` build and run those tests; maturin builds with default
+# features, so the wheel is unchanged.
+default = ["extension-module"]
+extension-module = ["pyo3/extension-module"]
+# Links libpython and lets `Python::attach` start an interpreter inside the
+# test binary. Kept out of `default` (and out of dev-dependencies, whose
+# features would leak into the cdylib build) so the shipped wheel is
+# unaffected. Run the Rust tests with:
+#     cargo test --no-default-features --features test-interpreter
+test-interpreter = ["pyo3/auto-initialize"]
+
 [dependencies]
-# Pinned to a ropoctl fork branch (`ropoctl-stack`), not upstream, while five
-# PRs sent to jeremychone/rust-genai are in review. The branch is upstream
-# main (0.7.0-beta.19-WIP) plus exactly those five commits:
+# Pinned to a ropoctl fork branch (`ropoctl-stack-v2`), not upstream. It is
+# upstream main (0.7.0-beta.19-WIP) plus:
 #
-#   #285  ChatOptions.stop_sequences serde default (partial dict deser)
-#   #286  AdapterKind::all()
-#   #287  Error::status() / webc::Error::status()
-#   #288  all_model_names must honour the ServiceTargetResolver
-#   #289  ClientBuilder::with_provider_config
+#   - anthropic: preserve signed thinking across tool turns (was PR #275;
+#     carried here because it is still fork-only and 0.7.0.1/0.7.0.2 of this
+#     package depend on it)
+#   - #285  ChatOptions.stop_sequences serde default (partial dict deser)
+#   - #286  AdapterKind::all()
+#   - #287  Error::status() / webc::Error::status()
+#   - #288  all_model_names must honour the ServiceTargetResolver
+#   - #289  ClientBuilder::with_provider_config
 #
-# Repin to an upstream rev once they land; the fork branch exists only to
-# avoid carrying local workarounds for fixes that are already written.
-genai = { git = "https://github.com/ropoctl/rust-genai", rev = "ccccfb2a306a2f105a80cc4fc2e1855c21845440" }
-pyo3 = { version = "0.28", features = ["extension-module"] }
+# Repin to an upstream rev once those land.
+genai = { git = "https://github.com/ropoctl/rust-genai", rev = "6029ade06417a3810b0100aaf6d81461152ccc90" }
+pyo3 = { version = "0.28" }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 futures = "0.3"

@@ -20,7 +20,7 @@ class TestResolveTarget:
             .build()
         )
 
-        target = client.resolve_target(g.ModelIden("openai", "fake-model"))
+        target = client.resolve_service_target(g.ModelIden("openai", "fake-model"))
 
         assert target.endpoint.base_url == fake_provider.base_url
         assert target.model.adapter_kind.name == "openai"
@@ -36,7 +36,7 @@ class TestResolveTarget:
             .build()
         )
 
-        target = client.resolve_target("gpt-4o")
+        target = client.resolve_service_target("gpt-4o")
 
         assert target.model.model_name == "mapped-model"
 
@@ -51,7 +51,7 @@ class TestResolveTarget:
             .build()
         )
 
-        target = client.resolve_target(g.ModelIden("openai", "gpt-4o"))
+        target = client.resolve_service_target(g.ModelIden("openai", "gpt-4o"))
 
         assert target.endpoint.base_url == "https://rerouted.example/v1/"
 
@@ -63,7 +63,7 @@ class TestResolveTarget:
         )
 
         async def run():
-            return await client.aresolve_target(g.ModelIden("openai", "fake-model"))
+            return await client.aresolve_service_target(g.ModelIden("openai", "fake-model"))
 
         assert asyncio.run(run()).endpoint.base_url == fake_provider.base_url
 
@@ -74,7 +74,7 @@ class TestResolveTarget:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         client = g.Client()
 
-        target = client.resolve_target(g.ModelIden("openai", "gpt-4o"))
+        target = client.resolve_service_target(g.ModelIden("openai", "gpt-4o"))
 
         assert target.auth.kind == "from_env"
         assert target.auth.env_name == "OPENAI_API_KEY"
@@ -87,7 +87,7 @@ class TestResolveTarget:
             g.ModelIden("openai", "gpt-4o"),
         )
 
-        resolved = client.resolve_target(target)
+        resolved = client.resolve_service_target(target)
 
         assert resolved.endpoint.base_url == "https://api.example/v1/"
 
@@ -116,7 +116,7 @@ class TestListModels:
         )
 
         async def run():
-            return await client.alist_models("openai")
+            return await client.aall_model_names("openai")
 
         assert asyncio.run(run()) == ["model-a", "model-b"]
 
@@ -124,7 +124,7 @@ class TestListModels:
         client = g.Client()
 
         async def run():
-            return await client.alist_models(
+            return await client.aall_model_names(
                 "openai",
                 endpoint=fake_provider.base_url,
                 auth=g.AuthData.key("sk-test"),
@@ -147,7 +147,7 @@ class TestListModels:
         )
 
         async def run():
-            return await client.alist_models("openai")
+            return await client.aall_model_names("openai")
 
         with pytest.raises(g.GenaiError):
             asyncio.run(run())
@@ -168,7 +168,7 @@ def test_list_models_never_falls_back_to_the_public_api(fake_provider, monkeypat
     )
 
     async def run():
-        return await client.alist_models("openai")
+        return await client.aall_model_names("openai")
 
     assert asyncio.run(run()) == ["model-a", "model-b"]
     assert fake_provider.requests, "the lookup did not reach the configured endpoint"

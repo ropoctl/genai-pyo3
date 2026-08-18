@@ -32,8 +32,8 @@ Entry points:
 | `client.chat(model, request, options=None)` | blocking |
 | `await client.aembed(model, text, options=None)` | one embedding |
 | `await client.aembed_batch(model, texts, options=None)` | many |
-| `client.resolve_target(model)` | where a call would go, without making it |
-| `await client.alist_models(adapter_kind)` | what a provider is serving |
+| `client.resolve_service_target(model)` | where a call would go, without making it |
+| `await client.aall_model_names(adapter_kind)` | what a provider is serving |
 
 `model` is `str | ModelIden | ServiceTarget` everywhere.
 
@@ -115,9 +115,20 @@ GenaiError(RuntimeError)
 └── UnsupportedError   feature unavailable on this adapter/model
 ```
 
-Every instance carries `status`, `body`, `model_name`, `adapter_kind`,
-`retry_after`, and `is_retryable`. `is_retryable` is a conservative hint;
-the retry and backoff policy is yours.
+Every instance carries:
+
+| | |
+| --- | --- |
+| `kind` | the precise failure in rust-genai's own vocabulary — the error variant in snake_case (`"http_error"`, `"no_auth_data"`), or the provider's own error type for a mid-stream failure (`"overloaded_error"`) |
+| `status` | HTTP status, when the provider answered with one |
+| `retryable` | conservative hint; the retry and backoff policy is yours |
+| `body` | response body, when there was one |
+| `headers` | response headers, when the failure carried an HTTP response |
+| `retry_after` | seconds, parsed from `headers` when present |
+| `model_iden` | the model the failure is about, when the error names one |
+
+The exception class is the actionable category; `kind` is the exact cause.
+Branch on the class, log the `kind`.
 
 ```python
 try:
@@ -181,9 +192,15 @@ Cache in Python rather than doing I/O in a callback.
 
 ```bash
 maturin develop          # build the extension into the active venv
-cargo test               # Rust unit tests
 python -m pytest         # Python tests (no network; a local fake provider)
+
+# Rust tests link against libpython, so they need the extension-module
+# feature off and the interpreter feature on:
+cargo test --no-default-features --features test-interpreter
 ```
+
+`cargo build` does not link the cdylib on macOS (it lacks maturin's link
+arguments); use `cargo check` or `maturin develop`.
 
 ## Migrating
 

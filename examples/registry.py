@@ -30,7 +30,7 @@ async def main() -> None:
     target = REGISTRY[name]
 
     # Check where the call lands before spending a request on it.
-    resolved = client.resolve_target(target)
+    resolved = client.resolve_service_target(target)
     print(f"{name} -> {resolved.endpoint.base_url} ({resolved.model.model_name})")
 
     request = ChatRequest(messages=[ChatMessage("user", "Reply with exactly: registry ok")])

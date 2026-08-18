@@ -34,7 +34,10 @@ def test_hierarchy_is_rooted_in_runtime_error():
         (400, g.BadRequestError, False),
         (401, g.BadRequestError, False),
         (404, g.BadRequestError, False),
-        (408, g.BadRequestError, True),
+        # 408 is deliberately not retryable: the shipped rule is 429 or 5xx,
+        # and a request timeout usually means the request was too big rather
+        # than that the provider was briefly busy.
+        (408, g.BadRequestError, False),
         (429, g.RateLimitError, True),
         (500, g.ServerError, True),
         (503, g.ServerError, True),
@@ -50,10 +53,10 @@ def test_status_maps_to_exception_class(
 
     err = excinfo.value
     assert err.status == status
-    assert err.is_retryable is retryable
+    assert err.retryable is retryable
     assert "nope" in err.body
-    assert err.model_name == "fake-model"
-    assert err.adapter_kind == "OpenAI"
+    assert err.model_iden.model_name == "fake-model"
+    assert err.model_iden.adapter_kind.name == "openai"
 
 
 def test_rate_limit_exposes_retry_after(client, request_obj, fake_provider):
@@ -99,7 +102,7 @@ def test_transport_failure_is_retryable(request_obj):
     with pytest.raises(g.TransportError) as excinfo:
         client.chat("fake-model", request_obj)
 
-    assert excinfo.value.is_retryable is True
+    assert excinfo.value.retryable is True
     assert excinfo.value.status is None
 
 
@@ -118,7 +121,7 @@ def test_missing_credentials_raise_auth_error(request_obj, monkeypatch):
     with pytest.raises(g.AuthError) as excinfo:
         client.chat("fake-model", request_obj)
 
-    assert excinfo.value.is_retryable is False
+    assert excinfo.value.retryable is False
 
 
 def test_async_path_raises_the_same_types(client, request_obj, fake_provider):
@@ -133,7 +136,7 @@ def test_async_path_raises_the_same_types(client, request_obj, fake_provider):
 
     err = asyncio.run(run())
     assert err.status == 500
-    assert err.is_retryable is True
+    assert err.retryable is True
 
 
 def test_success_still_returns_a_response(client, request_obj):

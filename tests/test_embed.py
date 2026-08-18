@@ -129,7 +129,7 @@ def test_failures_are_typed(embed_client, fake_provider):
     with pytest.raises(g.RateLimitError) as excinfo:
         asyncio.run(run())
 
-    assert excinfo.value.is_retryable is True
+    assert excinfo.value.retryable is True
 
 
 def test_response_to_dict(embed_client):

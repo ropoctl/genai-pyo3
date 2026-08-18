@@ -38,8 +38,20 @@ class ToolResponsePartDict(TypedDict):
 class CustomPartDict(TypedDict):
     custom: Any
 
+class ThoughtSignaturePartDict(TypedDict):
+    thought_signature: str
+
+class ReasoningContentPartDict(TypedDict):
+    reasoning_content: str
+
 ContentPartDict = (
-    TextPartDict | BinaryPartDict | ToolCallPartDict | ToolResponsePartDict | CustomPartDict
+    TextPartDict
+    | BinaryPartDict
+    | ToolCallPartDict
+    | ToolResponsePartDict
+    | ThoughtSignaturePartDict
+    | ReasoningContentPartDict
+    | CustomPartDict
 )
 
 class ChatMessageDict(TypedDict):
@@ -48,6 +60,7 @@ class ChatMessageDict(TypedDict):
     options: NotRequired[Any]
     cache_control: NotRequired[str]
     thought_signatures: NotRequired[list[str]]
+    reasoning_content: NotRequired[str]
     raw_content: NotRequired[list[dict[str, Any]]]
 
 class ToolDict(TypedDict):
@@ -221,19 +234,25 @@ class GenaiError(RuntimeError):
     to be; existing ``except RuntimeError:`` handlers keep working.
     """
 
-    #: Resolved model name, when the failure happened after resolution.
-    model_name: str | None
-    #: Resolved adapter, in rust-genai's display spelling (``"OpenAI"``).
-    adapter_kind: str | None
-    #: HTTP status, when the provider answered with one.
+    #: Precise failure kind, in rust-genai's own vocabulary — the error
+    #: variant in snake_case (``"http_error"``, ``"no_auth_data"``), or the
+    #: provider's own error type for a mid-stream failure
+    #: (``"overloaded_error"``). Narrower than the exception class.
+    kind: str
+    #: HTTP status, when the provider answered with one. Named to match
+    #: rust-genai's ``Error::status()``.
     status: int | None
-    #: Response body, when there was one.
-    body: str | None
-    #: ``Retry-After`` in seconds, when the provider sent one.
-    retry_after: float | None
     #: Conservative hint: true only for statuses and transport failures
     #: worth retrying. The retry and backoff policy is yours.
-    is_retryable: bool
+    retryable: bool
+    #: Response body, when there was one.
+    body: str | None
+    #: Response headers, when the failure carried an HTTP response.
+    headers: dict[str, str]
+    #: ``Retry-After`` in seconds, parsed from ``headers`` when present.
+    retry_after: float | None
+    #: The model the failure is about, when the error names one.
+    model_iden: ModelIden | None
 
 class ConfigError(GenaiError): ...
 class AuthError(GenaiError): ...
@@ -291,6 +310,10 @@ class ChatMessage:
     tool_response_call_id: str | None
     cache_control: str | None
     thought_signatures: list[str] | None
+    #: Readable reasoning paired with ``thought_signatures`` on an assistant
+    #: turn; providers requiring signed thinking use both to rebuild the
+    #: provider-native continuation block.
+    reasoning_content: str | None
     raw_content_json: str | None
 
     def __new__(
@@ -303,6 +326,7 @@ class ChatMessage:
         thought_signatures: list[str] | None = ...,
         raw_content: Any | None = ...,
         content_parts: list[str | Binary | ContentPartDict] | None = ...,
+        reasoning_content: str | None = ...,
     ) -> ChatMessage:
         """A message. Supply ``content`` for plain text, or ``content_parts``
         to mix text with images and PDFs."""
@@ -312,6 +336,7 @@ class ChatMessage:
     def to_dict(self) -> dict[str, Any]: ...
     @staticmethod
     def from_python(obj: Any) -> ChatMessage: ...
+    def to_dict(self) -> dict[str, Any]: ...
 
 class Tool:
     name: str
@@ -524,6 +549,23 @@ class ChatResponse:
     def captured_raw_body(self) -> Any | None:
         """The provider's raw body — only when ``capture_raw_body=True``."""
 
+    @property
+    def model_iden(self) -> ModelIden:
+        """The resolved model, spelled as rust-genai spells it."""
+
+    @property
+    def provider_model_iden(self) -> ModelIden:
+        """The model the provider reported serving."""
+
+    @property
+    def thought_signatures(self) -> list[str]:
+        """Reasoning signatures in the content, including stream-level ones."""
+
+    def to_assistant_message_for_tool_use(self) -> ChatMessage | None:
+        """The assistant turn to send back when continuing after a tool call,
+        keeping multi-block reasoning/signature pairings intact. ``None`` when
+        the response made no tool calls."""
+
     def to_dict(self) -> dict[str, Any]: ...
 
 class StreamEnd:
@@ -730,12 +772,13 @@ class Client:
     async def aembed_batch(
         self, model: ModelLike, inputs: list[str], options: EmbedOptionsLike | None = ...
     ) -> EmbedResponse: ...
-    def resolve_target(self, model: ModelLike) -> ServiceTarget:
-        """Where this call would go, without making it."""
+    def resolve_service_target(self, model: ModelLike) -> ServiceTarget:
+        """Where this call would go, without making it. Named after
+        rust-genai's ``Client::resolve_service_target``."""
 
-    async def aresolve_target(self, model: ModelLike) -> ServiceTarget: ...
+    async def aresolve_service_target(self, model: ModelLike) -> ServiceTarget: ...
     def default_model(self, model_name: str) -> ModelIden: ...
-    async def alist_models(
+    async def aall_model_names(
         self,
         adapter_kind: AdapterKind | str,
         *,
@@ -780,6 +823,7 @@ __all__ = [
     "ConfigError",
     "ContentPartDict",
     "CustomPartDict",
+    "ReasoningContentPartDict",
     "EmbedOptions",
     "EmbedOptionsDict",
     "EmbedOptionsLike",
@@ -803,6 +847,7 @@ __all__ = [
     "StreamError",
     "StreamEventKind",
     "TextPartDict",
+    "ThoughtSignaturePartDict",
     "Tool",
     "ToolCall",
     "ToolCallPartDict",
