@@ -217,6 +217,22 @@ impl PyBinary {
         self.inner.is_pdf()
     }
 
+    #[getter]
+    fn is_audio(&self) -> bool {
+        self.inner.is_audio()
+    }
+
+    #[getter]
+    fn is_video(&self) -> bool {
+        self.inner.is_video()
+    }
+
+    /// Approximate payload size in bytes.
+    #[getter]
+    fn size(&self) -> usize {
+        self.inner.size()
+    }
+
     /// The content-part dict form, ready to drop into `content_parts`.
     fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let value = serde_json::to_value(&self.inner)

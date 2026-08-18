@@ -160,3 +160,21 @@ class TestMixedContent:
         with pytest.raises(ValueError) as excinfo:
             g.ChatMessage("user", content_parts=["ok", object()])
         assert "content_parts[1]" in str(excinfo.value)
+
+
+def test_binary_exposes_every_media_predicate():
+    image = g.Binary.from_base64("image/png", "aGVsbG8=")
+    audio = g.Binary.from_base64("audio/mpeg", "aGVsbG8=")
+    video = g.Binary.from_base64("video/mp4", "aGVsbG8=")
+    pdf = g.Binary.from_url("application/pdf", "https://example.com/a.pdf")
+
+    assert (image.is_image, image.is_audio, image.is_video, image.is_pdf) == (
+        True,
+        False,
+        False,
+        False,
+    )
+    assert audio.is_audio is True
+    assert video.is_video is True
+    assert pdf.is_pdf is True
+    assert image.size > 0
