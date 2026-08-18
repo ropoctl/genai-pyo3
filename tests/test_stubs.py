@@ -32,7 +32,7 @@ def stub_all() -> list[str]:
 def stub_toplevel_names() -> set[str]:
     names: set[str] = set()
     for node in stub_tree().body:
-        if isinstance(node, ast.ClassDef):
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             names.add(node.name)
         elif isinstance(node, ast.Assign):
             names.update(t.id for t in node.targets if isinstance(t, ast.Name))

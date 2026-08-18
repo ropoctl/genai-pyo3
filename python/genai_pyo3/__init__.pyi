@@ -656,6 +656,16 @@ class ClientBuilder:
         """Replace the whole timeout configuration (connect defaults to 30s)."""
 
     def default_headers(self, headers: dict[str, str]) -> ClientBuilder: ...
+    def embed_options(self, options: EmbedOptionsLike) -> ClientBuilder:
+        """Defaults for every embedding call. Per-call options win."""
+
+    def proxy(
+        self, url: str, *, scheme: Literal["all", "http", "https"] = ...
+    ) -> ClientBuilder:
+        """Route requests through an HTTP proxy."""
+
+    def gzip(self, enabled: bool) -> ClientBuilder: ...
+    def tcp_nodelay(self, enabled: bool) -> ClientBuilder: ...
     def auth_resolver(self, callback: Any) -> ClientBuilder:
         """``fn(ModelIden) -> AuthData | None``, consulted before the
         declarative provider table. Must be a regular ``def``: it is called
@@ -724,6 +734,17 @@ class Client:
     ) -> list[str]:
         """Ask a provider which models it is currently serving."""
 
+def sanitize_json_schema(
+    schema: Any,
+    dialect: Literal["openai_strict", "openai_strict_tool", "anthropic_structured"],
+) -> Any:
+    """Apply a provider's constrained-decoding schema normalization.
+
+    rust-genai does this automatically at the adapter boundary; this is for
+    inspecting what a provider will enforce before a request discovers it.
+    The rewrite can be lossy.
+    """
+
 __all__ = [
     "AdapterKind",
     "ApiError",
@@ -780,4 +801,5 @@ __all__ = [
     "TransportError",
     "UnsupportedError",
     "Usage",
+    "sanitize_json_schema",
 ]

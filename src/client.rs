@@ -4,8 +4,9 @@ use futures::StreamExt;
 use genai::ModelIden;
 use genai::adapter::AdapterKind;
 use genai::chat::{ChatOptions, ChatStreamEvent, StreamEnd};
+use genai::embed::EmbedOptions;
 use genai::resolver::{AuthData, AuthResolver, Endpoint, ModelMapper, ServiceTargetResolver};
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -404,6 +405,13 @@ pub(crate) struct PyClientBuilder {
     total_timeout_seconds: Option<f64>,
     default_headers: Option<HashMap<String, String>>,
     timeouts_configured: bool,
+    embed_options: Option<EmbedOptions>,
+    proxy_url: Option<String>,
+    /// Which traffic the proxy handles: "all", "http", or "https". Only
+    /// meaningful alongside `proxy_url`.
+    proxy_scheme: String,
+    gzip: Option<bool>,
+    tcp_nodelay: Option<bool>,
     auth_callback: Option<PyCallback>,
     model_mapper_callback: Option<PyCallback>,
     service_target_callback: Option<PyCallback>,
@@ -528,6 +536,52 @@ impl PyClientBuilder {
         Ok(slf)
     }
 
+    /// Default embed options for every embedding call. Per-call options win.
+    fn embed_options<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        options: Bound<'py, PyAny>,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        slf.embed_options = coerce_embed_options(Some(options))?;
+        Ok(slf)
+    }
+
+    /// Route requests through an HTTP proxy.
+    ///
+    /// `scheme` picks which traffic the proxy handles: `"all"` (default),
+    /// `"http"`, or `"https"`. Without this, requests ignore any proxy
+    /// environment the process was started with, which in a locked-down
+    /// network looks like an unexplained connect timeout.
+    #[pyo3(signature = (url, *, scheme = "all"))]
+    fn proxy<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        url: String,
+        scheme: &str,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        match scheme {
+            "all" | "http" | "https" => {}
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "invalid proxy scheme {other:?}. expected one of: all, http, https"
+                )));
+            }
+        }
+        slf.proxy_url = Some(url);
+        slf.proxy_scheme = scheme.to_string();
+        Ok(slf)
+    }
+
+    /// Enable or disable gzip response decompression (default: enabled).
+    fn gzip(mut slf: PyRefMut<'_, Self>, enabled: bool) -> PyRefMut<'_, Self> {
+        slf.gzip = Some(enabled);
+        slf
+    }
+
+    /// Enable or disable TCP_NODELAY (default: enabled).
+    fn tcp_nodelay(mut slf: PyRefMut<'_, Self>, enabled: bool) -> PyRefMut<'_, Self> {
+        slf.tcp_nodelay = Some(enabled);
+        slf
+    }
+
     /// Headers sent with every request.
     fn default_headers(
         mut slf: PyRefMut<'_, Self>,
@@ -538,7 +592,16 @@ impl PyClientBuilder {
     }
 
     fn build(&self) -> PyResult<PyClient> {
-        let mut builder = genai::Client::builder();
+        // Seed the ClientConfig before anything else touches it.
+        // `ClientBuilder::with_config` *replaces* the config wholesale, so
+        // calling it further down would silently discard the adapter
+        // binding, web config, and resolvers set up in between. Everything
+        // after this point amends the config in place.
+        let mut builder = match self.embed_options.clone() {
+            Some(embed_options) => genai::Client::builder()
+                .with_config(genai::ClientConfig::default().with_embed_options(embed_options)),
+            None => genai::Client::builder(),
+        };
 
         if let Some(adapter_kind) = self.adapter_kind {
             builder = builder.with_adapter_kind(adapter_kind);
@@ -554,6 +617,10 @@ impl PyClientBuilder {
             self.read_timeout_seconds,
             self.total_timeout_seconds,
             self.default_headers.clone(),
+            self.proxy_url.as_deref(),
+            &self.proxy_scheme,
+            self.gzip,
+            self.tcp_nodelay,
         )? {
             builder = builder.with_web_config(web_config);
         }
@@ -666,15 +733,23 @@ where
     Ok(py.detach(|| pyo3_async_runtimes::tokio::get_runtime().block_on(fut)))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn web_config_from_overrides(
     connect_timeout_seconds: Option<f64>,
     read_timeout_seconds: Option<f64>,
     timeout_seconds: Option<f64>,
     default_headers: Option<HashMap<String, String>>,
+    proxy_url: Option<&str>,
+    proxy_scheme: &str,
+    gzip: Option<bool>,
+    tcp_nodelay: Option<bool>,
 ) -> PyResult<Option<genai::WebConfig>> {
     if connect_timeout_seconds.is_none()
         && read_timeout_seconds.is_none()
         && timeout_seconds.is_none()
+        && proxy_url.is_none()
+        && gzip.is_none()
+        && tcp_nodelay.is_none()
         && default_headers
             .as_ref()
             .is_none_or(|headers| headers.is_empty())
@@ -695,6 +770,20 @@ fn web_config_from_overrides(
         && !headers.is_empty()
     {
         web_config = web_config.with_default_headers(build_header_map(&headers)?);
+    }
+    if let Some(url) = proxy_url {
+        web_config = match proxy_scheme {
+            "http" => web_config.with_proxy_url(url),
+            "https" => web_config.with_https_proxy_url(url),
+            _ => web_config.with_all_proxy_url(url),
+        }
+        .map_err(|err| PyValueError::new_err(format!("invalid proxy url {url:?}: {err}")))?;
+    }
+    if let Some(enabled) = gzip {
+        web_config.gzip = enabled;
+    }
+    if let Some(enabled) = tcp_nodelay {
+        web_config.tcp_nodelay = enabled;
     }
     Ok(Some(web_config))
 }

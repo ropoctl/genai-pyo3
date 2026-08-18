@@ -19,6 +19,7 @@ mod response;
 mod target;
 
 use pyo3::prelude::*;
+use pyo3::wrap_pyfunction;
 
 #[pymodule]
 fn _genai_pyo3(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -48,5 +49,6 @@ fn _genai_pyo3(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<embed::PyEmbedOptions>()?;
     module.add_class::<embed::PyEmbedResponse>()?;
     module.add_class::<embed::PyEmbedding>()?;
+    module.add_function(wrap_pyfunction!(convert::sanitize_json_schema, module)?)?;
     Ok(())
 }

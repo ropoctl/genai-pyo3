@@ -141,6 +141,25 @@ from genai_pyo3 import Binary, ChatMessage
 ChatMessage("user", content_parts=["what is in this?", Binary.from_path("chart.png")])
 ```
 
+## Transport
+
+```python
+(Client.builder()
+    .proxy("http://proxy.corp:3128", scheme="https")   # "all" | "http" | "https"
+    .timeouts(connect_seconds=10.0, read_seconds=120.0)
+    .gzip(False)
+    .tcp_nodelay(False)
+    .build())
+```
+
+Without an explicit proxy, requests ignore whatever proxy environment the
+process was started with — which on a locked-down network looks like an
+unexplained connect timeout.
+
+`sanitize_json_schema(schema, dialect)` applies a provider's
+constrained-decoding normalization without making a request, for seeing
+what will actually be enforced before a rejection tells you.
+
 ## Resolver callbacks
 
 For credentials or routing that cannot be stated up front:

@@ -3,7 +3,9 @@
 //! Everything here is a pure translation between Python values, `serde_json`
 //! values, and rust-genai types — no pyclasses, no I/O.
 
-use genai::chat::{CacheControl, ChatRole, ContentPart, CustomPart, ReasoningEffort};
+use genai::chat::{
+    CacheControl, ChatRole, ContentPart, CustomPart, JsonSchemaDialect, ReasoningEffort,
+};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -327,4 +329,36 @@ pub(crate) fn build_header_map(headers: &HashMap<String, String>) -> PyResult<He
         map.insert(header_name, header_value);
     }
     Ok(map)
+}
+
+/// Apply a provider's constrained-decoding schema normalization to a JSON
+/// Schema, without making a request.
+///
+/// rust-genai applies this automatically at the adapter boundary, so this
+/// is for inspection: seeing what a provider will actually enforce before
+/// discovering it in a rejected request. The rewrite can be lossy — OpenAI
+/// requires every declared property to be required, and both providers
+/// require `additionalProperties: false` on constrained objects — so the
+/// result may accept fewer instances than the input.
+#[pyfunction]
+#[pyo3(signature = (schema, dialect))]
+pub(crate) fn sanitize_json_schema(
+    py: Python<'_>,
+    schema: Bound<'_, PyAny>,
+    dialect: &str,
+) -> PyResult<Py<PyAny>> {
+    let dialect = match dialect.trim().to_ascii_lowercase().as_str() {
+        "openai_strict" => JsonSchemaDialect::OpenAiStrict,
+        "openai_strict_tool" => JsonSchemaDialect::OpenAiStrictTool,
+        "anthropic_structured" => JsonSchemaDialect::AnthropicStructured,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "invalid dialect {other:?}. expected one of: openai_strict, \
+                 openai_strict_tool, anthropic_structured"
+            )));
+        }
+    };
+    let value: serde_json::Value = depythonize(&schema)
+        .map_err(|err| PyValueError::new_err(format!("schema must be JSON-compatible: {err}")))?;
+    json_value_to_py(py, &genai::chat::sanitize_json_schema(&value, dialect))
 }

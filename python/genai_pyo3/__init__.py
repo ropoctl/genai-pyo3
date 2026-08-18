@@ -30,6 +30,7 @@ from ._genai_pyo3 import (
     ResolverError,
     ResponseError,
     ServerError,
+    sanitize_json_schema,
     ServiceTarget,
     StreamEnd,
     StreamError,
@@ -229,4 +230,5 @@ __all__ = [
     "TransportError",
     "UnsupportedError",
     "Usage",
+    "sanitize_json_schema",
 ]
