@@ -480,7 +480,7 @@ dependencies = [
 [[package]]
 name = "genai"
 version = "0.7.0-beta.19-WIP"
-source = "git+https://github.com/ropoctl/rust-genai?rev=6029ade06417a3810b0100aaf6d81461152ccc90#6029ade06417a3810b0100aaf6d81461152ccc90"
+source = "git+https://github.com/ropoctl/rust-genai?rev=b3158152c528a7f4f76a91ac8549bcda604a86da#b3158152c528a7f4f76a91ac8549bcda604a86da"
 dependencies = [
  "base64 0.23.1",
  "bytes",

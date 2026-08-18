@@ -27,7 +27,7 @@ extension-module = ["pyo3/extension-module"]
 test-interpreter = ["pyo3/auto-initialize"]
 
 [dependencies]
-# Pinned to a ropoctl fork branch (`ropoctl-stack-v2`), not upstream. It is
+# Pinned to a ropoctl fork branch (`ropoctl-stack-v3`), not upstream. It is
 # upstream main (0.7.0-beta.19-WIP) plus:
 #
 #   - anthropic: preserve signed thinking across tool turns (was PR #275;
@@ -40,7 +40,7 @@ test-interpreter = ["pyo3/auto-initialize"]
 #   - #289  ClientBuilder::with_provider_config
 #
 # Repin to an upstream rev once those land.
-genai = { git = "https://github.com/ropoctl/rust-genai", rev = "6029ade06417a3810b0100aaf6d81461152ccc90" }
+genai = { git = "https://github.com/ropoctl/rust-genai", rev = "b3158152c528a7f4f76a91ac8549bcda604a86da" }
 pyo3 = { version = "0.28" }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
