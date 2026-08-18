@@ -45,6 +45,14 @@ class FakeProvider:
 
     def __init__(self) -> None:
         self.reply = Reply()
+        self.model_list_reply = Reply(
+            body=json.dumps(
+                {
+                    "object": "list",
+                    "data": [{"id": "model-a"}, {"id": "model-b"}],
+                }
+            )
+        )
         self.requests: list[dict[str, Any]] = []
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler_class())
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
@@ -87,6 +95,18 @@ class FakeProvider:
                 self.send_header("content-length", str(len(payload)))
                 for name, value in reply.headers.items():
                     self.send_header(name, value)
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def do_GET(self) -> None:  # noqa: N802 - stdlib naming
+                provider.requests.append(
+                    {"path": self.path, "headers": dict(self.headers), "body": None}
+                )
+                reply = provider.model_list_reply
+                payload = reply.body.encode()
+                self.send_response(reply.status)
+                self.send_header("content-type", reply.content_type)
+                self.send_header("content-length", str(len(payload)))
                 self.end_headers()
                 self.wfile.write(payload)
 

@@ -17,7 +17,10 @@ use crate::resolvers::{PyCallback, auth_resolver_fn, model_mapper_fn, service_ta
 use crate::response::{
     PyChatResponse, PyChatStream, stop_reason_parts, to_py_chat_response, to_py_usage,
 };
-use crate::target::{AdapterKindLike, EndpointLike, ModelLike, PyAdapterKind, PyAuthData};
+use crate::target::{
+    AdapterKindLike, EndpointLike, ModelLike, PyAdapterKind, PyAuthData, PyModelIden,
+    PyServiceTarget,
+};
 
 /// Connect-timeout applied unless `ClientBuilder.timeouts(...)` says
 /// otherwise. Thirty seconds covers any realistic TCP+TLS handshake while
@@ -46,6 +49,15 @@ pub(crate) struct PyClient {
     /// The adapter this client is pinned to via `ClientBuilder.adapter_kind`,
     /// or `None` when routing is decided per call.
     bound_adapter_kind: Option<AdapterKind>,
+    /// The declarative per-provider endpoints and credentials this client
+    /// was built with.
+    ///
+    /// Chat routing gets these through the resolvers rust-genai installs,
+    /// but `all_model_names` takes a `ProviderConfig` argument instead and
+    /// never consults the service-target resolver — so without keeping the
+    /// table here, listing models would quietly ignore a configured
+    /// endpoint and query the adapter's public default instead.
+    provider_overrides: HashMap<AdapterKind, ProviderOverride>,
 }
 
 #[pymethods]
@@ -57,6 +69,7 @@ impl PyClient {
         Self {
             inner: genai::Client::default(),
             bound_adapter_kind: None,
+            provider_overrides: HashMap::new(),
         }
     }
 
@@ -77,6 +90,83 @@ impl PyClient {
             Some(kind) => format!("Client(adapter_kind={:?})", kind.as_lower_str()),
             None => "Client(unbound)".to_string(),
         }
+    }
+
+    /// Work out exactly where a call would go, without making it.
+    ///
+    /// Runs the same resolution the request path runs — adapter inference,
+    /// model mapping, auth and endpoint resolvers — and hands back the
+    /// resulting `ServiceTarget`. Useful for validating configuration at
+    /// startup and for answering "which provider is this actually hitting?"
+    /// without spending a request.
+    fn aresolve_target<'py>(
+        &self,
+        py: Python<'py>,
+        model: ModelLike,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let model_spec = model.into_spec();
+        let client = self.inner.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let target = client
+                .resolve_service_target(model_spec)
+                .await
+                .map_err(to_py_err)?;
+            Ok(PyServiceTarget { inner: target })
+        })
+    }
+
+    /// Blocking form of [`aresolve_target`](Self::aresolve_target).
+    fn resolve_target(&self, py: Python<'_>, model: ModelLike) -> PyResult<PyServiceTarget> {
+        let target =
+            block_on_shared_runtime(py, self.inner.resolve_service_target(model.into_spec()))?
+                .map_err(to_py_err)?;
+        Ok(PyServiceTarget { inner: target })
+    }
+
+    /// Which adapter a bare model name infers to, before any mapping.
+    fn default_model(&self, model_name: &str) -> PyResult<PyModelIden> {
+        self.inner
+            .default_model(model_name)
+            .map(|inner| PyModelIden { inner })
+            .map_err(to_py_err)
+    }
+
+    /// Ask a provider which models it is currently serving.
+    ///
+    /// Beats a hand-maintained table for local serving stacks and
+    /// gateways, where the model list is whatever was loaded this morning.
+    /// `endpoint` and `auth` override the client's configuration for this
+    /// lookup only.
+    #[pyo3(signature = (adapter_kind, *, endpoint = None, auth = None))]
+    fn alist_models<'py>(
+        &self,
+        py: Python<'py>,
+        adapter_kind: AdapterKindLike,
+        endpoint: Option<EndpointLike>,
+        auth: Option<PyAuthData>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let kind = adapter_kind.resolve()?;
+        let configured = self.provider_overrides.get(&kind);
+        // Explicit arguments win; otherwise use whatever this client was
+        // configured with for that provider, so listing models goes to the
+        // same place chatting would.
+        let endpoint = match endpoint {
+            Some(endpoint) => Some(endpoint.resolve()?),
+            None => configured.and_then(|entry| entry.endpoint.clone()),
+        };
+        let auth = match auth {
+            Some(auth) => Some(auth.inner),
+            None => configured.and_then(|entry| entry.auth.clone()),
+        };
+        let client = self.inner.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .all_model_names(kind, (endpoint, auth))
+                .await
+                .map_err(to_py_err)
+        })
     }
 
     #[pyo3(signature = (model, request, options = None))]
@@ -482,6 +572,7 @@ impl PyClientBuilder {
         Ok(PyClient {
             inner: builder.build(),
             bound_adapter_kind: self.adapter_kind,
+            provider_overrides: self.providers.clone(),
         })
     }
 
