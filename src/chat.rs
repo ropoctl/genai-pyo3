@@ -953,7 +953,11 @@ impl From<PyChatOptions> for ChatOptions {
                 .cache_control
                 .as_deref()
                 .and_then(parse_cache_control),
-            ..Default::default()
+            // Deliberately no `..Default::default()`: every field of
+            // rust-genai's ChatOptions is spelled out here, so a field
+            // added upstream becomes a compile error rather than an option
+            // that silently does nothing. Letting that happen quietly is
+            // how this binding fell behind in the first place.
         }
     }
 }
