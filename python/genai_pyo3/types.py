@@ -22,7 +22,7 @@ from typing_extensions import NotRequired
 
 if False:  # TYPE_CHECKING
     # Only imported by stub-aware tools; keeps runtime import cycle out.
-    from . import ChatOptions, ChatRequest
+    from . import ChatOptions, ChatRequest, EmbedOptions, ModelIden, ServiceTarget
 
 Role = Literal["system", "user", "assistant", "tool"]
 """Lowercase role names — isomorphic to genai's ``ChatRole`` variants.
@@ -78,6 +78,10 @@ class ToolDict(TypedDict):
     description: NotRequired[str]
     schema: NotRequired[dict[str, Any]]
     custom_format: NotRequired[dict[str, Any]]
+    strict: NotRequired[bool]
+    cache_control: NotRequired[str]
+    eager_input_streaming: NotRequired[bool]
+    config: NotRequired[Any]
 
 
 class ChatRequestDict(TypedDict, total=False):
@@ -112,20 +116,66 @@ class ChatOptionsDict(TypedDict, total=False):
     reasoning_effort: str | None
     prompt_cache_key: str | None
     extra_body: dict[str, Any] | None
+    tool_choice: str | None
+    verbosity: str | None
+    service_tier: str | None
+    cache_control: str | None
+
+
+class EmbedOptionsDict(TypedDict, total=False):
+    headers: dict[str, str] | None
+    capture_raw_body: bool | None
+    capture_usage: bool | None
+    dimensions: int | None
+    encoding_format: str | None
+    user: str | None
+    embedding_type: str | None
+    truncate: str | None
+
+
+#: Normalised stop reasons, comparable across providers.
+StopReason = Literal[
+    "completed", "max_tokens", "tool_call", "content_filter", "stop_sequence", "other"
+]
+
+#: Stream event kinds, in the order they can occur.
+StreamEventKind = Literal[
+    "start",
+    "chunk",
+    "reasoning_chunk",
+    "thought_signature_chunk",
+    "tool_call_chunk",
+    "end",
+]
 
 
 ChatRequestLike = Union["ChatRequest", ChatRequestDict]
 ChatOptionsLike = Union["ChatOptions", ChatOptionsDict]
+EmbedOptionsLike = Union["EmbedOptions", EmbedOptionsDict]
+
+#: What a call's ``model`` argument may be — the three levels of routing
+#: detail: infer everything, pin the adapter, or state the whole target.
+ModelLike = Union[str, "ModelIden", "ServiceTarget"]
 
 
 __all__ = [
+    "BinaryPartDict",
     "ChatMessageDict",
     "ChatOptionsDict",
     "ChatOptionsLike",
     "ChatRequestDict",
     "ChatRequestLike",
     "ContentPartDict",
+    "CustomPartDict",
+    "EmbedOptionsDict",
+    "EmbedOptionsLike",
     "JsonSpecDict",
+    "ModelLike",
     "Role",
+    "StopReason",
+    "StreamEventKind",
+    "TextPartDict",
+    "ToolCallPartDict",
     "ToolDict",
+    "ToolResponsePartDict",
 ]

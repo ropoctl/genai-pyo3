@@ -10,22 +10,32 @@ genai = { git = "https://github.com/jeremychone/rust-genai" }
 
 ## What It Exposes
 
-The Python extension currently exposes:
+**Routing** — `AdapterKind`, `ModelIden`, `Endpoint`, `AuthData`, `ServiceTarget`
 
-- `Client`
-- `ChatMessage`
-- `ChatRequest`
-- `ChatOptions`
-- `ChatResponse`
-- `ChatStreamEvent`
-- `StreamEnd`
-- `ToolCall`
-- `Usage`
+**Client** — `Client`, `ClientBuilder`
 
-The main async entry points are:
+**Requests** — `ChatRequest`, `ChatMessage`, `ChatOptions`, `Tool`, `ToolCall`, `JsonSpec`, `Binary`
 
-- `await client.achat(model, request, options=None)` for a full response
-- `await client.astream_chat(model, request, options=None)` for chunked streaming
+**Responses** — `ChatResponse`, `StreamEnd`, `ChatStreamEvent`, `Usage` (with prompt/completion/cache-creation detail)
+
+**Embeddings** — `EmbedOptions`, `EmbedResponse`, `Embedding`
+
+**Errors** — `GenaiError` and its subclasses (see below)
+
+Entry points:
+
+| | |
+| --- | --- |
+| `await client.achat(model, request, options=None)` | a full response |
+| `await client.astream_chat(model, request, options=None)` | an async iterator of events |
+| `await client.achat_via_stream(model, request, options=None)` | stream under the hood, one response out |
+| `client.chat(model, request, options=None)` | blocking |
+| `await client.aembed(model, text, options=None)` | one embedding |
+| `await client.aembed_batch(model, texts, options=None)` | many |
+| `client.resolve_target(model)` | where a call would go, without making it |
+| `await client.alist_models(adapter_kind)` | what a provider is serving |
+
+`model` is `str | ModelIden | ServiceTarget` everywhere.
 
 ## Install
 
@@ -39,110 +49,124 @@ This builds the `pyo3` extension and makes `genai_pyo3` importable from the acti
 
 ## Quick Start
 
-Minimal async call:
-
 ```python
 import asyncio
-from genai_pyo3 import ChatMessage, ChatOptions, ChatRequest, Client
+from genai_pyo3 import AuthData, ChatMessage, ChatRequest, Client
 
 
 async def main() -> None:
-    client = Client()
-    request = ChatRequest(
-        messages=[ChatMessage("user", "Say hello in one short sentence")]
+    client = (
+        Client.builder()
+        .adapter_kind("openai")
+        .provider("openai", auth=AuthData.from_env("OPENAI_API_KEY"))
+        .build()
     )
-    options = ChatOptions(temperature=0.2)
+    request = ChatRequest(messages=[ChatMessage("user", "Say hello in one short sentence")])
 
-    response = await client.achat("gpt-4o-mini", request, options)
+    response = await client.achat("gpt-4o-mini", request)
     print(response.text)
 
 
 asyncio.run(main())
 ```
 
-Minimal async streaming call:
+## Named endpoints
+
+A `ServiceTarget` states where to go, how to authenticate, and which model to
+ask for. A registry of them is just a dict, and one client serves all of it:
 
 ```python
-import asyncio
-from genai_pyo3 import ChatMessage, ChatOptions, ChatRequest, Client
+from genai_pyo3 import AuthData, Client, ModelIden, ServiceTarget
 
+client = Client()
+registry = {
+    "flash": ServiceTarget(
+        "https://openrouter.ai/api/v1/",
+        AuthData.from_env("OPENROUTER_API_KEY"),
+        ModelIden("openai", "deepseek-ai/DeepSeek-V4-Flash-0731"),
+    ),
+    "local": ServiceTarget(
+        "http://localhost:8000/v1/",
+        AuthData.none(),
+        ModelIden("openai", "Qwen/Qwen3.8-27B"),
+    ),
+}
 
-async def main() -> None:
-    client = Client()
-    request = ChatRequest(
-        messages=[ChatMessage("user", "Write three short bullet points about Rust")]
-    )
-    options = ChatOptions(capture_content=True, capture_usage=True)
-
-    stream = await client.astream_chat("gpt-4o-mini", request, options)
-    async for event in stream:
-        print(event.kind, event.content)
-
-
-asyncio.run(main())
+response = await client.achat(registry["flash"], request)
 ```
 
-## Examples
+`AuthData` never reveals a key to Python and redacts it in `repr()`, so
+logging a `ServiceTarget` does not log a credential.
 
-- `examples/async_chat_basic.py`: basic `achat` example
-- `examples/async_stream_chat.py`: basic `astream_chat` example
-- `examples/client_overrides.py`: explicit provider/API-key override example
-- `examples/gemini_env.py`: Gemini `achat` example using env vars
-- `examples/gemini_stream_env.py`: Gemini streaming example using env vars
+## Errors
 
-### Run The Gemini Examples
+```text
+GenaiError(RuntimeError)
+├── ConfigError        malformed request/options, adapter mismatch
+├── AuthError          missing or unresolvable credentials
+├── ResolverError      a resolver (including a Python callback) failed
+├── ApiError           the provider answered with a failure status
+│   ├── BadRequestError    4xx other than 429
+│   ├── RateLimitError     429
+│   └── ServerError        5xx
+├── TransportError     connect/timeout/socket failures, dropped streams
+├── StreamError        malformed or error events mid-stream
+├── ResponseError      a well-formed reply that could not be interpreted
+└── UnsupportedError   feature unavailable on this adapter/model
+```
 
-The Gemini examples use:
+Every instance carries `status`, `body`, `model_name`, `adapter_kind`,
+`retry_after`, and `is_retryable`. `is_retryable` is a conservative hint;
+the retry and backoff policy is yours.
 
-- `GEMINI_API_KEY`
-- `GEMINI_MODEL` (optional, defaults to `gemini-2.0-flash`)
-- `GEMINI_BASE_URL` (optional, for custom or local Gemini-compatible endpoints)
+```python
+try:
+    response = await client.achat(target, request)
+except RateLimitError as err:
+    await asyncio.sleep(err.retry_after or 5.0)
+```
 
-Non-streaming:
+## Truncation
+
+`stop_reason` is normalised across providers — `"completed"`,
+`"max_tokens"`, `"tool_call"`, `"content_filter"`, `"stop_sequence"`,
+`"other"` — with the provider's own wording kept in `stop_reason_raw`.
+Without it, a truncated answer is indistinguishable from a short one.
+
+## Images and PDFs
+
+```python
+from genai_pyo3 import Binary, ChatMessage
+
+ChatMessage("user", content_parts=["what is in this?", Binary.from_path("chart.png")])
+```
+
+## Resolver callbacks
+
+For credentials or routing that cannot be stated up front:
+
+```python
+(Client.builder()
+    .auth_resolver(lambda iden: AuthData.key(cache[iden.adapter_kind.name]))
+    .model_mapper(lambda iden: ALIASES.get(iden.model_name, iden.model_name))
+    .service_target_resolver(lambda target: reroute(target))
+    .build())
+```
+
+Callbacks must be regular `def`s. They are called synchronously while
+holding the GIL, so an `async def` would never be awaited — it is rejected
+at registration — and blocking inside one stalls every other Python thread.
+Cache in Python rather than doing I/O in a callback.
+
+## Development
 
 ```bash
-GEMINI_API_KEY=your-key python examples/gemini_env.py
+maturin develop          # build the extension into the active venv
+cargo test               # Rust unit tests
+python -m pytest         # Python tests (no network; a local fake provider)
 ```
 
-Streaming:
+## Migrating
 
-```bash
-GEMINI_API_KEY=your-key python examples/gemini_stream_env.py
-```
-
-With a custom endpoint:
-
-```bash
-GEMINI_API_KEY=your-key \
-GEMINI_BASE_URL=http://your-host/v1beta \
-python examples/gemini_env.py
-```
-
-```bash
-GEMINI_API_KEY=your-key \
-GEMINI_BASE_URL=http://your-host/v1beta \
-python examples/gemini_stream_env.py
-```
-
-If `GEMINI_BASE_URL` is unset, the examples use the default Gemini endpoint resolved by the underlying `genai` client.
-
-## Layout
-
-- `Cargo.toml`: Rust extension crate
-- `pyproject.toml`: Python package metadata and `maturin` config
-- `python/genai_pyo3`: Python package entrypoint
-- `src/lib.rs`: `pyo3` binding implementation
-- `examples/`: small Python usage examples
-
-## Local Development
-
-Create a virtualenv and install in editable mode:
-
-```bash
-cd genai-pyo3
-python -m venv .venv
-source .venv/bin/activate
-uv pip install -e .
-```
-
-If you want stricter reproducibility, pin that dependency to a branch, tag, or revision.
+See [MIGRATION.md](MIGRATION.md) for the move from the `Client.with_*`
+constructors to `ClientBuilder`.
