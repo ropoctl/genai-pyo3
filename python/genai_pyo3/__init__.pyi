@@ -553,6 +553,8 @@ StreamEventKind = Literal[
     "reasoning_chunk",
     "thought_signature_chunk",
     "tool_call_chunk",
+    #: Keep-alive ping — no content, the stream is simply still open.
+    "heartbeat",
     "end",
 ]
 

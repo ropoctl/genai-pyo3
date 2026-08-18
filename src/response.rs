@@ -798,6 +798,9 @@ fn to_py_stream_event(py: Python<'_>, event: ChatStreamEvent) -> PyResult<Py<PyC
             Some(to_py_tool_call(&chunk.tool_call)?),
             None,
         ),
+        // A keep-alive ping, not content. Surfaced rather than swallowed so
+        // a caller watching for stalls can see the stream is still live.
+        ChatStreamEvent::Heartbeat => ("heartbeat".to_string(), None, None, None),
         ChatStreamEvent::End(stream_end) => (
             "end".to_string(),
             None,

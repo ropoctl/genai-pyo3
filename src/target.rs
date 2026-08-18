@@ -18,43 +18,6 @@ use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-/// Canonical lowercase names for every non-`Custom` adapter, mirroring the
-/// `adapter_kind_str_maps!` table in rust-genai. Kept as data here because
-/// upstream exposes `from_lower_str` but no way to enumerate; the unit test
-/// at the bottom of this file round-trips every entry, so a rename upstream
-/// breaks the build rather than silently yielding a bogus list.
-const ADAPTER_KIND_NAMES: [&str; 29] = [
-    "openai",
-    "openai_resp",
-    "gemini",
-    "anthropic",
-    "fireworks",
-    "together",
-    "groq",
-    "aihubmix",
-    "kimi",
-    "mimo",
-    "moonshot",
-    "nebius",
-    "xai",
-    "deepseek",
-    "zai",
-    "bigmodel",
-    "aliyun",
-    "baidu",
-    "cohere",
-    "ollama",
-    "ollama_cloud",
-    "omlx",
-    "vertex",
-    "github_copilot",
-    "opencode_go",
-    "bedrock_api",
-    "open_router",
-    "atlascloud",
-    "minimax",
-];
-
 /// Which provider protocol to speak.
 #[pyclass(name = "AdapterKind", frozen, from_py_object)]
 #[derive(Clone, Copy)]
@@ -86,10 +49,9 @@ impl PyAdapterKind {
     /// is parameterised rather than enumerable.
     #[staticmethod]
     fn all() -> Vec<Self> {
-        ADAPTER_KIND_NAMES
+        AdapterKind::all()
             .iter()
-            .filter_map(|name| AdapterKind::from_lower_str(name))
-            .map(|inner| Self { inner })
+            .map(|&inner| Self { inner })
             .collect()
     }
 
@@ -487,27 +449,13 @@ impl ModelLike {
 pub(crate) fn parse_adapter_kind(provider: &str) -> PyResult<AdapterKind> {
     let normalized = provider.trim().to_ascii_lowercase();
     AdapterKind::from_lower_str(&normalized).ok_or_else(|| {
+        let known = AdapterKind::all()
+            .iter()
+            .map(|kind| kind.as_lower_str())
+            .collect::<Vec<_>>()
+            .join(", ");
         PyValueError::new_err(format!(
-            "invalid provider {provider:?}. expected one of: {}",
-            ADAPTER_KIND_NAMES.join(", ")
+            "invalid provider {provider:?}. expected one of: {known}"
         ))
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// `ADAPTER_KIND_NAMES` is hand-maintained against upstream's
-    /// `adapter_kind_str_maps!`. If upstream renames a variant this fails
-    /// loudly instead of `AdapterKind.all()` quietly dropping an entry.
-    #[test]
-    fn every_listed_adapter_name_round_trips() {
-        for name in ADAPTER_KIND_NAMES {
-            let kind = AdapterKind::from_lower_str(name)
-                .unwrap_or_else(|| panic!("unknown adapter kind name: {name}"));
-            assert_eq!(kind.as_lower_str(), name);
-        }
-        assert_eq!(PyAdapterKind::all().len(), ADAPTER_KIND_NAMES.len());
-    }
 }
