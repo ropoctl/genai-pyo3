@@ -27,20 +27,7 @@ extension-module = ["pyo3/extension-module"]
 test-interpreter = ["pyo3/auto-initialize"]
 
 [dependencies]
-# Pinned to a ropoctl fork branch (`ropoctl-stack-v3`), not upstream. It is
-# upstream main (0.7.0-beta.19-WIP) plus:
-#
-#   - anthropic: preserve signed thinking across tool turns (was PR #275;
-#     carried here because it is still fork-only and 0.7.0.1/0.7.0.2 of this
-#     package depend on it)
-#   - #285  ChatOptions.stop_sequences serde default (partial dict deser)
-#   - #286  AdapterKind::all()
-#   - #287  Error::status() / webc::Error::status()
-#   - #288  all_model_names must honour the ServiceTargetResolver
-#   - #289  ClientBuilder::with_provider_config
-#
-# Repin to an upstream rev once those land.
-genai = { git = "https://github.com/ropoctl/rust-genai", rev = "b3158152c528a7f4f76a91ac8549bcda604a86da" }
+genai = { git = "https://github.com/jeremychone/rust-genai", rev = "83119d69311fef53c6c1da2542e655229424538f" }
 pyo3 = { version = "0.28" }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -67,12 +67,12 @@ impl PyClient {
     /// A client with no configuration: every call must carry enough
     /// routing information of its own.
     #[new]
-    fn new() -> Self {
-        Self {
-            inner: genai::Client::default(),
+    fn new() -> PyResult<Self> {
+        Ok(Self {
+            inner: genai::Client::new().map_err(to_py_err)?,
             bound_adapter_kind: None,
             provider_overrides: HashMap::new(),
-        }
+        })
     }
 
     /// Start configuring a client.
@@ -694,7 +694,7 @@ impl PyClientBuilder {
         }
 
         Ok(PyClient {
-            inner: builder.build(),
+            inner: builder.build().map_err(to_py_err)?,
             bound_adapter_kind: self.adapter_kind,
             provider_overrides: self.providers.clone(),
         })

@@ -769,7 +769,7 @@ impl TryFrom<PyChatMessage> for ChatMessage {
             .map(|cc| MessageOptions {
                 cache_control: Some(cc),
             });
-        let thought_signatures = message.thought_signatures.clone();
+        let mut thought_signatures = message.thought_signatures.clone();
         let reasoning_content = message.reasoning_content.clone();
         let has_normalized_content = message.normalized_content.is_some();
         let mut message = message;
@@ -820,17 +820,17 @@ impl TryFrom<PyChatMessage> for ChatMessage {
                         }
                     })
                     .collect();
-                if thought_signatures
+                if !thought_signatures
                     .as_ref()
-                    .is_some_and(|sigs| !sigs.is_empty())
+                    .is_some_and(|signatures| !signatures.is_empty())
                 {
-                    // Message-level signatures are canonical. Avoid having
-                    // ChatMessage::from(calls) also prepend the convenience
-                    // mirror carried by the first tool call.
-                    ChatMessage::assistant(MessageContent::from_tool_calls(calls))
-                } else {
-                    ChatMessage::from(calls)
+                    thought_signatures = calls
+                        .iter()
+                        .find_map(|call| call.thought_signatures.as_ref())
+                        .filter(|signatures| !signatures.is_empty())
+                        .cloned();
                 }
+                ChatMessage::assistant(MessageContent::from_tool_calls(calls))
             }
             ChatRole::Tool => {
                 // Tool response message
@@ -984,6 +984,7 @@ impl From<PyChatOptions> for ChatOptions {
             capture_reasoning_content: options.capture_reasoning_content,
             capture_tool_calls: options.capture_tool_calls,
             capture_raw_body: options.capture_raw_body,
+            raw_frame_sink: None,
             response_format,
             normalize_reasoning_content: options.normalize_reasoning_content,
             seed: options.seed,

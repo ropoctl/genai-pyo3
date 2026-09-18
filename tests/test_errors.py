@@ -53,6 +53,7 @@ def test_status_maps_to_exception_class(
 
     err = excinfo.value
     assert err.status == status
+    assert err.status_code == status
     assert err.retryable is retryable
     assert "nope" in err.body
     assert err.model_iden.model_name == "fake-model"
@@ -137,6 +138,31 @@ def test_async_path_raises_the_same_types(client, request_obj, fake_provider):
     err = asyncio.run(run())
     assert err.status == 500
     assert err.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_first_stream_poll_exposes_typed_gateway_error(
+    client, request_obj, fake_provider
+):
+    fake_provider.respond(
+        status=502,
+        body=json.dumps({"error": "bad gateway"}),
+        headers={"retry-after": "1"},
+    )
+
+    stream = await client.astream_chat("fake-model", request_obj)
+    with pytest.raises(g.ServerError) as excinfo:
+        async for _ in stream:
+            pass
+
+    err = excinfo.value
+    assert err.kind == "http_error"
+    assert err.status == 502
+    assert err.status_code == 502
+    assert err.retryable is True
+    assert err.retry_after == 1.0
+    assert err.headers["retry-after"] == "1"
+    assert "bad gateway" in err.body
 
 
 def test_success_still_returns_a_response(client, request_obj):

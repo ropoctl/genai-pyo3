@@ -121,6 +121,7 @@ Every instance carries:
 | --- | --- |
 | `kind` | the precise failure in rust-genai's own vocabulary — the error variant in snake_case (`"http_error"`, `"no_auth_data"`), or the provider's own error type for a mid-stream failure (`"overloaded_error"`) |
 | `status` | HTTP status, when the provider answered with one |
+| `status_code` | compatibility alias for `status` |
 | `retryable` | conservative hint; the retry and backoff policy is yours |
 | `body` | response body, when there was one |
 | `headers` | response headers, when the failure carried an HTTP response |

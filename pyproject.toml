@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "genai-pyo3"
-version = "0.7.0.4b1"
+version = "0.7.0.4"
 description = "Python bindings for rust-genai"
 readme = "README.md"
 requires-python = ">=3.9"

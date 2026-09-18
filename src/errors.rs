@@ -478,6 +478,7 @@ pub(crate) fn to_py_err(error: genai::Error) -> PyErr {
         for result in [
             instance.setattr("kind", metadata.kind),
             instance.setattr("status", metadata.status),
+            instance.setattr("status_code", metadata.status),
             instance.setattr("retryable", metadata.retryable),
             instance.setattr("body", metadata.body),
             instance.setattr("headers", metadata.headers),
