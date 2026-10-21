@@ -274,11 +274,9 @@ pub(crate) fn coerce_message_content(
 
 /// Parse a case-insensitive effort keyword into a `ReasoningEffort`.
 ///
-/// Accepted: "none", "minimal", "low", "medium", "high", "xhigh",
+/// Accepted: "none", "zero", "minimal", "low", "medium", "high", "xhigh",
 /// "max", or "budget:<n>" where `<n>` is a non-negative u32 token
-/// budget. Returns `None` for unrecognized values so callers get a
-/// silent no-op rather than a hard error — matches the rest of
-/// ChatOptions' "everything is optional" pattern.
+/// budget.
 pub(crate) fn parse_reasoning_effort(raw: &str) -> Option<ReasoningEffort> {
     let trimmed = raw.trim().to_ascii_lowercase();
     if let Some(budget) = trimmed.strip_prefix("budget:") {
@@ -298,6 +296,15 @@ pub(crate) fn parse_reasoning_effort(raw: &str) -> Option<ReasoningEffort> {
         "max" => Some(ReasoningEffort::Max),
         _ => None,
     }
+}
+
+pub(crate) fn validate_reasoning_effort(raw: &str) -> PyResult<()> {
+    parse_reasoning_effort(raw).map(|_| ()).ok_or_else(|| {
+        PyValueError::new_err(format!(
+            "invalid reasoning_effort {raw:?}. expected one of: none, zero, \
+             minimal, low, medium, high, xhigh, max, or budget:<u32>"
+        ))
+    })
 }
 
 /// Parse a case-insensitive cache-control keyword into a `CacheControl`.

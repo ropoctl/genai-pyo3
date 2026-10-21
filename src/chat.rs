@@ -16,13 +16,13 @@ use crate::convert::{
     coerce_custom_format_to_json_string, coerce_json_to_string, coerce_schema_to_json_string,
     json_value_to_py, lowercase_content_part_keys, normalize_chat_request_value,
     normalize_content_parts, parse_cache_control, parse_chat_role, parse_reasoning_effort,
-    raw_content_json_to_message_content, validate_role,
+    raw_content_json_to_message_content, validate_reasoning_effort, validate_role,
 };
 
 #[pyclass(name = "ChatMessage", from_py_object)]
 #[derive(Clone, Default)]
 pub(crate) struct PyChatMessage {
-    #[pyo3(get, set)]
+    #[pyo3(get)]
     pub(crate) role: String,
     #[pyo3(get, set)]
     pub(crate) content: String,
@@ -36,8 +36,8 @@ pub(crate) struct PyChatMessage {
     /// "ephemeral_1h", "ephemeral_24h", "memory". Anthropic applies these
     /// as `cache_control: {type: ephemeral, ttl: ...}` at the content-part
     /// level; OpenAI maps a subset to request-level caching and ignores
-    /// the rest. Unknown values are silently dropped.
-    #[pyo3(get, set)]
+    /// the rest.
+    #[pyo3(get)]
     pub(crate) cache_control: Option<String>,
     /// Opaque reasoning signatures carried back from a prior assistant turn.
     /// Depending on the adapter these become signed Anthropic thinking blocks,
@@ -90,6 +90,9 @@ impl PyChatMessage {
         reasoning_content: Option<String>,
     ) -> PyResult<Self> {
         validate_role(&role)?;
+        if let Some(value) = cache_control.as_deref() {
+            parse_cache_control_strict(value)?;
+        }
         let raw_content_json = raw_content.map(coerce_schema_to_json_string).transpose()?;
         let content_parts_json = content_parts.map(coerce_content_parts).transpose()?;
         if content.is_none() && content_parts_json.is_none() && raw_content_json.is_none() {
@@ -109,6 +112,22 @@ impl PyChatMessage {
             content_parts_json,
             normalized_content: None,
         })
+    }
+
+    #[setter]
+    fn set_role(&mut self, value: String) -> PyResult<()> {
+        validate_role(&value)?;
+        self.role = value;
+        Ok(())
+    }
+
+    #[setter]
+    fn set_cache_control(&mut self, value: Option<String>) -> PyResult<()> {
+        if let Some(raw) = value.as_deref() {
+            parse_cache_control_strict(raw)?;
+        }
+        self.cache_control = value;
+        Ok(())
     }
 
     /// The mixed-content parts, as the lowercase-keyed dict form.
@@ -340,7 +359,7 @@ pub(crate) struct PyTool {
     pub(crate) strict: Option<bool>,
     /// Prompt-cache hint. On Anthropic, setting this on the *last* tool
     /// caches the whole tool-list prefix.
-    #[pyo3(get, set)]
+    #[pyo3(get)]
     pub(crate) cache_control: Option<String>,
     /// Anthropic fine-grained tool streaming: stream tool-call input
     /// token-by-token instead of buffering the whole JSON server-side.
@@ -482,6 +501,15 @@ impl PyTool {
         self.custom_format_json = value.map(coerce_custom_format_to_json_string).transpose()?;
         Ok(())
     }
+
+    #[setter]
+    fn set_cache_control(&mut self, value: Option<String>) -> PyResult<()> {
+        if let Some(raw) = value.as_deref() {
+            parse_cache_control_strict(raw)?;
+        }
+        self.cache_control = value;
+        Ok(())
+    }
 }
 
 #[pyclass(name = "ChatOptions", from_py_object)]
@@ -496,10 +524,10 @@ pub(crate) struct PyChatOptions {
     #[pyo3(get, set)]
     stop_sequences: Vec<String>,
     /// Maximum seconds to wait for streaming response headers.
-    #[pyo3(get, set)]
+    #[pyo3(get)]
     stream_header_timeout: Option<f64>,
     /// Maximum seconds to wait between raw streaming body chunks.
-    #[pyo3(get, set)]
+    #[pyo3(get)]
     stream_read_timeout: Option<f64>,
     #[pyo3(get, set)]
     capture_usage: Option<bool>,
@@ -523,17 +551,17 @@ pub(crate) struct PyChatOptions {
     tool_choice: Option<String>,
     /// Response length preference where the provider has one (OpenAI
     /// gpt-5 family): "low", "medium", or "high".
-    #[pyo3(get, set)]
+    #[pyo3(get)]
     verbosity: Option<String>,
     /// OpenAI processing tier: "flex" (cheaper, slower), "auto", or
     /// "default".
-    #[pyo3(get, set)]
+    #[pyo3(get)]
     service_tier: Option<String>,
     /// Request-level prompt-cache hint. Accepted: "ephemeral",
     /// "ephemeral_5m", "ephemeral_1h", "ephemeral_24h", "memory".
     /// Anthropic auto-marks the static tools+system prefix; OpenAI maps a
     /// subset onto its request-level cache settings.
-    #[pyo3(get, set)]
+    #[pyo3(get)]
     cache_control: Option<String>,
     #[pyo3(get, set)]
     normalize_reasoning_content: Option<bool>,
@@ -547,7 +575,7 @@ pub(crate) struct PyChatOptions {
     /// budget). Without this, capture_reasoning_content=True only
     /// captures reasoning the provider volunteers on its own, which
     /// on OpenAI Responses is typically empty.
-    #[pyo3(get, set)]
+    #[pyo3(get)]
     reasoning_effort: Option<String>,
     /// OpenAI Responses API prefix-cache key. Holding this constant across
     /// requests in a session lets the backend recognise the cacheable
@@ -619,6 +647,9 @@ impl PyChatOptions {
         // Validate the enum-shaped strings here, at construction, so a typo
         // is a ValueError at the call site rather than an option that
         // silently does nothing on the wire.
+        if let Some(value) = reasoning_effort.as_deref() {
+            validate_reasoning_effort(value)?;
+        }
         if let Some(value) = verbosity.as_deref() {
             parse_verbosity(value)?;
         }
@@ -655,6 +686,56 @@ impl PyChatOptions {
             service_tier,
             cache_control,
         })
+    }
+
+    #[setter]
+    fn set_stream_header_timeout(&mut self, value: Option<f64>) -> PyResult<()> {
+        validate_timeout("stream_header_timeout", value)?;
+        self.stream_header_timeout = value;
+        Ok(())
+    }
+
+    #[setter]
+    fn set_stream_read_timeout(&mut self, value: Option<f64>) -> PyResult<()> {
+        validate_timeout("stream_read_timeout", value)?;
+        self.stream_read_timeout = value;
+        Ok(())
+    }
+
+    #[setter]
+    fn set_verbosity(&mut self, value: Option<String>) -> PyResult<()> {
+        if let Some(raw) = value.as_deref() {
+            parse_verbosity(raw)?;
+        }
+        self.verbosity = value;
+        Ok(())
+    }
+
+    #[setter]
+    fn set_service_tier(&mut self, value: Option<String>) -> PyResult<()> {
+        if let Some(raw) = value.as_deref() {
+            parse_service_tier(raw)?;
+        }
+        self.service_tier = value;
+        Ok(())
+    }
+
+    #[setter]
+    fn set_cache_control(&mut self, value: Option<String>) -> PyResult<()> {
+        if let Some(raw) = value.as_deref() {
+            parse_cache_control_strict(raw)?;
+        }
+        self.cache_control = value;
+        Ok(())
+    }
+
+    #[setter]
+    fn set_reasoning_effort(&mut self, value: Option<String>) -> PyResult<()> {
+        if let Some(raw) = value.as_deref() {
+            validate_reasoning_effort(raw)?;
+        }
+        self.reasoning_effort = value;
+        Ok(())
     }
 }
 
@@ -1159,7 +1240,10 @@ pub(crate) fn coerce_chat_options(obj: Option<Bound<'_, PyAny>>) -> PyResult<Opt
     })?;
     let mut stream_timeouts = [None, None];
     if let Some(map) = value.as_object_mut() {
-        for (index, name) in ["stream_header_timeout", "stream_read_timeout"].iter().enumerate() {
+        for (index, name) in ["stream_header_timeout", "stream_read_timeout"]
+            .iter()
+            .enumerate()
+        {
             if let Some(raw) = map.remove(*name) {
                 if !raw.is_null() {
                     let seconds = raw.as_f64().ok_or_else(|| {

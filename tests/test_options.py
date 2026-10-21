@@ -43,6 +43,14 @@ class TestVerbosity:
             g.ChatOptions(verbosity="lowish")
         assert "low, medium, high" in str(excinfo.value)
 
+    def test_typos_fail_on_setter(self):
+        opts = g.ChatOptions()
+        opts.verbosity = "medium"
+        assert opts.verbosity == "medium"
+        with pytest.raises(ValueError) as excinfo:
+            opts.verbosity = "lowish"
+        assert "low, medium, high" in str(excinfo.value)
+
 
 class TestServiceTier:
     def test_reaches_the_wire(self, client, request_obj, fake_provider):
@@ -52,6 +60,13 @@ class TestServiceTier:
     def test_typos_fail_at_construction(self):
         with pytest.raises(ValueError):
             g.ChatOptions(service_tier="cheap")
+
+    def test_typos_fail_on_setter(self):
+        opts = g.ChatOptions()
+        opts.service_tier = "auto"
+        assert opts.service_tier == "auto"
+        with pytest.raises(ValueError):
+            opts.service_tier = "cheap"
 
 
 class TestCacheControl:
@@ -68,6 +83,47 @@ class TestCacheControl:
     def test_typos_fail_at_construction(self):
         with pytest.raises(ValueError):
             g.ChatOptions(cache_control="forever")
+
+    def test_typos_fail_on_setter(self):
+        opts = g.ChatOptions()
+        opts.cache_control = "ephemeral"
+        assert opts.cache_control == "ephemeral"
+        with pytest.raises(ValueError):
+            opts.cache_control = "forever"
+
+
+class TestReasoningEffortValidation:
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "none",
+            "zero",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "budget:1024",
+        ],
+    )
+    def test_accepted_values_construct_and_assign(self, value):
+        opts = g.ChatOptions(reasoning_effort=value)
+        assert opts.reasoning_effort == value
+        opts2 = g.ChatOptions()
+        opts2.reasoning_effort = value
+        assert opts2.reasoning_effort == value
+
+    @pytest.mark.parametrize("value", ["bogus", "budget:not-a-number", "budget:-5"])
+    def test_typos_fail_at_construction_and_on_setter(self, value):
+        with pytest.raises(ValueError) as excinfo:
+            g.ChatOptions(reasoning_effort=value)
+        assert "reasoning_effort" in str(excinfo.value)
+
+        opts = g.ChatOptions()
+        with pytest.raises(ValueError) as excinfo:
+            opts.reasoning_effort = value
+        assert "reasoning_effort" in str(excinfo.value)
 
 
 class TestExistingKnobsStillWork:
@@ -118,6 +174,11 @@ class TestStreamTimeouts:
             g.ChatOptions(stream_read_timeout=value)
         with pytest.raises(ValueError):
             send(client, request_obj, {"stream_header_timeout": value})
+        opts = g.ChatOptions()
+        with pytest.raises(ValueError):
+            opts.stream_read_timeout = value
+        with pytest.raises(ValueError):
+            opts.stream_header_timeout = value
 
 
 def test_dead_sanitize_schema_attribute_is_gone():
