@@ -35,11 +35,19 @@ class TestAdapterKind:
 
     def test_all_covers_the_known_adapters(self):
         names = {kind.name for kind in g.AdapterKind.all()}
-        assert {"openai", "anthropic", "gemini", "ollama", "open_router"} <= names
+        assert {
+            "openai", "anthropic", "gemini", "ollama", "open_router",
+            "vertex", "bedrock_api", "bedrock_sigv4", "mistral",
+            "requesty", "api_route", "gemini_ix",
+        } <= names
 
     def test_infers_adapter_from_model_name(self):
         assert g.AdapterKind.from_model("gpt-4o").name == "openai"
         assert g.AdapterKind.from_model("claude-sonnet-4-6").name == "anthropic"
+        assert g.AdapterKind.from_model("vertex::gemini-2.5-flash").name == "vertex"
+        assert g.AdapterKind.from_model("bedrock_api::us.anthropic.claude-sonnet-4-6").name == "bedrock_api"
+        assert g.AdapterKind.from_model("bedrock_sigv4::us.anthropic.claude-sonnet-4-6").name == "bedrock_sigv4"
+        assert g.AdapterKind.from_model("gemini-4-argon").name == "gemini_ix"
 
     def test_is_hashable_and_comparable(self):
         assert len({g.AdapterKind("openai"), g.AdapterKind("openai")}) == 1

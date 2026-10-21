@@ -94,6 +94,7 @@ class TestExistingKnobsStillWork:
         send(client, request_obj, g.ChatOptions(reasoning_effort="high"))
         assert fake_provider.requests[0]["body"]["reasoning_effort"] == "high"
 
+
     def test_extra_body_merges_provider_specific_fields(
         self, client, request_obj, fake_provider
     ):
@@ -103,6 +104,20 @@ class TestExistingKnobsStillWork:
     def test_dict_form_is_equivalent(self, client, request_obj, fake_provider):
         client.chat("fake-model", request_obj, {"temperature": 0.4})
         assert fake_provider.requests[0]["body"]["temperature"] == 0.4
+
+
+class TestStreamTimeouts:
+    def test_typed_and_dict_options_are_accepted(self, client, request_obj, fake_provider):
+        send(client, request_obj, g.ChatOptions(stream_header_timeout=2.5, stream_read_timeout=7.0))
+        send(client, request_obj, {"stream_header_timeout": 2.5, "stream_read_timeout": 7.0})
+        assert len(fake_provider.requests) == 2
+
+    @pytest.mark.parametrize("value", [0, -1, float("inf"), float("nan")])
+    def test_invalid_timeouts_are_rejected(self, client, request_obj, value):
+        with pytest.raises(ValueError):
+            g.ChatOptions(stream_read_timeout=value)
+        with pytest.raises(ValueError):
+            send(client, request_obj, {"stream_header_timeout": value})
 
 
 def test_dead_sanitize_schema_attribute_is_gone():

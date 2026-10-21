@@ -2,10 +2,11 @@
 
 Typed Python bindings for the Rust [`genai`](https://github.com/jeremychone/rust-genai) crate, built with `pyo3` and `maturin`.
 
-This repo uses the upstream GitHub repository for `genai` directly:
+This release uses upstream `genai` v0.7.0. The Bedrock SigV4 feature is enabled
+in the extension:
 
 ```toml
-genai = { git = "https://github.com/jeremychone/rust-genai" }
+genai = { git = "https://github.com/jeremychone/rust-genai", tag = "v0.7.0", features = ["bedrock-sigv4"] }
 ```
 
 ## What It Exposes
@@ -36,6 +37,36 @@ Entry points:
 | `await client.aall_model_names(adapter_kind)` | what a provider is serving |
 
 `model` is `str | ModelIden | ServiceTarget` everywhere.
+
+### Vertex and Bedrock
+
+Provider namespaces route through the native 0.7.0 adapters:
+
+```python
+from genai_pyo3 import AuthData, ChatMessage, ChatRequest, Client
+
+request = ChatRequest(messages=[ChatMessage("user", "Hello")])
+
+# Vertex uses a GCP OAuth bearer token; VERTEX_PROJECT_ID and optionally
+# VERTEX_LOCATION control the project and region.
+vertex = Client.builder().provider("vertex", auth=AuthData.from_env("VERTEX_TOKEN")).build()
+await vertex.achat("vertex::gemini-2.5-flash", request)
+await vertex.achat("vertex::claude-sonnet-4-6", request)
+
+# Bedrock API keys use BEDROCK_API_KEY (or AWS_BEARER_TOKEN_BEDROCK).
+await Client().achat("bedrock_api::us.anthropic.claude-sonnet-4-6", request)
+
+# SigV4 uses the AWS credential chain. Select a named profile per client
+# with AuthData.key("profile-name") when needed.
+sigv4 = Client.builder().provider("bedrock_sigv4", auth=AuthData.key("my-profile")).build()
+await sigv4.achat("bedrock_sigv4::us.anthropic.claude-sonnet-4-5-20250929-v1:0", request)
+```
+
+For Vertex, refresh the OAuth token before expiry through an auth resolver;
+`AuthData.from_env` reads an already available token. `ChatOptions` also accepts
+`stream_header_timeout` and `stream_read_timeout` in seconds for long-running
+streams. `AdapterKind.all()` includes the new 0.7.0 provider names, including
+Mistral, Requesty, API Route, and Gemini Interactions.
 
 ## Install
 

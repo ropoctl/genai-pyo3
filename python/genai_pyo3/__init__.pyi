@@ -406,6 +406,10 @@ class ChatOptions:
     max_tokens: int | None
     top_p: float | None
     stop_sequences: list[str]
+    #: Maximum seconds to wait for streaming response headers.
+    stream_header_timeout: float | None
+    #: Maximum seconds between raw streaming body chunks.
+    stream_read_timeout: float | None
     capture_usage: bool | None
     capture_content: bool | None
     capture_reasoning_content: bool | None
@@ -425,6 +429,7 @@ class ChatOptions:
     #: `reasoning.summary` outright (gpt-5.3-codex-spark returns
     #: `unsupported_parameter`), so only set
     #: `capture_reasoning_content=True` on models that support it.
+    #: "zero" is the canonical spelling; "none" remains an alias.
     reasoning_effort: str | None
     #: OpenAI Responses API prefix-cache key. Keep stable across requests
     #: in a session to maximise cache hits — surfaced as
@@ -447,6 +452,8 @@ class ChatOptions:
         max_tokens: int | None = ...,
         top_p: float | None = ...,
         stop_sequences: list[str] | None = ...,
+        stream_header_timeout: float | None = ...,
+        stream_read_timeout: float | None = ...,
         capture_usage: bool | None = ...,
         capture_content: bool | None = ...,
         capture_reasoning_content: bool | None = ...,

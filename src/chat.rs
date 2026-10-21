@@ -10,6 +10,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use pythonize::depythonize;
 use std::collections::HashMap;
+use std::time::Duration;
 
 use crate::convert::{
     coerce_custom_format_to_json_string, coerce_json_to_string, coerce_schema_to_json_string,
@@ -494,6 +495,12 @@ pub(crate) struct PyChatOptions {
     top_p: Option<f64>,
     #[pyo3(get, set)]
     stop_sequences: Vec<String>,
+    /// Maximum seconds to wait for streaming response headers.
+    #[pyo3(get, set)]
+    stream_header_timeout: Option<f64>,
+    /// Maximum seconds to wait between raw streaming body chunks.
+    #[pyo3(get, set)]
+    stream_read_timeout: Option<f64>,
     #[pyo3(get, set)]
     capture_usage: Option<bool>,
     #[pyo3(get, set)]
@@ -535,7 +542,7 @@ pub(crate) struct PyChatOptions {
     #[pyo3(get, set)]
     extra_headers: Option<HashMap<String, String>>,
     /// Reasoning effort hint — tells the provider to produce a
-    /// reasoning trace. Accepted values: "none", "minimal", "low",
+    /// reasoning trace. Accepted values: "zero" (or legacy "none"), "minimal", "low",
     /// "medium", "high", "xhigh", "max", or "budget:<n>" (token
     /// budget). Without this, capture_reasoning_content=True only
     /// captures reasoning the provider volunteers on its own, which
@@ -562,6 +569,8 @@ impl PyChatOptions {
 		max_tokens = None,
 		top_p = None,
 		stop_sequences = None,
+        stream_header_timeout = None,
+        stream_read_timeout = None,
 		capture_usage = None,
 		capture_content = None,
 		capture_reasoning_content = None,
@@ -586,6 +595,8 @@ impl PyChatOptions {
         max_tokens: Option<u32>,
         top_p: Option<f64>,
         stop_sequences: Option<Vec<String>>,
+        stream_header_timeout: Option<f64>,
+        stream_read_timeout: Option<f64>,
         capture_usage: Option<bool>,
         capture_content: Option<bool>,
         capture_reasoning_content: Option<bool>,
@@ -617,11 +628,15 @@ impl PyChatOptions {
         if let Some(value) = cache_control.as_deref() {
             parse_cache_control_strict(value)?;
         }
+        validate_timeout("stream_header_timeout", stream_header_timeout)?;
+        validate_timeout("stream_read_timeout", stream_read_timeout)?;
         Ok(Self {
             temperature,
             max_tokens,
             top_p,
             stop_sequences: stop_sequences.unwrap_or_default(),
+            stream_header_timeout,
+            stream_read_timeout,
             capture_usage,
             capture_content,
             capture_reasoning_content,
@@ -979,6 +994,8 @@ impl From<PyChatOptions> for ChatOptions {
             max_tokens: options.max_tokens,
             top_p: options.top_p,
             stop_sequences: options.stop_sequences,
+            stream_header_timeout: options.stream_header_timeout.map(Duration::from_secs_f64),
+            stream_read_timeout: options.stream_read_timeout.map(Duration::from_secs_f64),
             capture_usage: options.capture_usage,
             capture_content: options.capture_content,
             capture_reasoning_content: options.capture_reasoning_content,
@@ -1121,16 +1138,57 @@ pub(crate) fn coerce_chat_options(obj: Option<Bound<'_, PyAny>>) -> PyResult<Opt
     if let Ok(typed) = obj.extract::<PyChatOptions>() {
         return Ok(Some(ChatOptions::from(typed)));
     }
-    let value: serde_json::Value = depythonize(&obj).map_err(|err| {
+    // `depythonize` turns NaN and infinity into JSON null, so validate
+    // Python dict values before that conversion can hide invalid input.
+    if let Ok(dict) = obj.cast::<PyDict>() {
+        for name in ["stream_header_timeout", "stream_read_timeout"] {
+            if let Some(raw) = dict.get_item(name)? {
+                if !raw.is_none() {
+                    let seconds: f64 = raw.extract().map_err(|_| {
+                        PyValueError::new_err(format!("{name} must be a number of seconds"))
+                    })?;
+                    validate_timeout(name, Some(seconds))?;
+                }
+            }
+        }
+    }
+    let mut value: serde_json::Value = depythonize(&obj).map_err(|err| {
         PyValueError::new_err(format!(
             "chat options must be a ChatOptions or a JSON-compatible dict: {err}"
         ))
     })?;
-    serde_json::from_value(fill_chat_options_defaults(value))
-        .map(Some)
+    let mut stream_timeouts = [None, None];
+    if let Some(map) = value.as_object_mut() {
+        for (index, name) in ["stream_header_timeout", "stream_read_timeout"].iter().enumerate() {
+            if let Some(raw) = map.remove(*name) {
+                if !raw.is_null() {
+                    let seconds = raw.as_f64().ok_or_else(|| {
+                        PyValueError::new_err(format!("{name} must be a number of seconds"))
+                    })?;
+                    validate_timeout(name, Some(seconds))?;
+                    stream_timeouts[index] = Some(Duration::from_secs_f64(seconds));
+                }
+            }
+        }
+    }
+    let mut options: ChatOptions = serde_json::from_value(fill_chat_options_defaults(value))
         .map_err(|err| {
             PyValueError::new_err(format!("chat options dict does not match schema: {err}"))
-        })
+        })?;
+    options.stream_header_timeout = stream_timeouts[0];
+    options.stream_read_timeout = stream_timeouts[1];
+    Ok(Some(options))
+}
+
+fn validate_timeout(name: &str, seconds: Option<f64>) -> PyResult<()> {
+    if let Some(seconds) = seconds {
+        if !seconds.is_finite() || seconds <= 0.0 || seconds > Duration::MAX.as_secs_f64() {
+            return Err(PyValueError::new_err(format!(
+                "{name} must be a finite, positive number of seconds"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Overlay a caller's option dict onto a serialized `ChatOptions::default()`.

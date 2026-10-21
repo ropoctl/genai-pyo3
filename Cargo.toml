@@ -27,7 +27,7 @@ extension-module = ["pyo3/extension-module"]
 test-interpreter = ["pyo3/auto-initialize"]
 
 [dependencies]
-genai = { git = "https://github.com/jeremychone/rust-genai", rev = "83119d69311fef53c6c1da2542e655229424538f" }
+genai = { git = "https://github.com/jeremychone/rust-genai", tag = "v0.7.0", features = ["bedrock-sigv4"] }
 pyo3 = { version = "0.28" }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
