@@ -140,3 +140,39 @@ def test_response_to_dict(embed_client):
 
     assert as_dict["embeddings"][0]["index"] == 0
     assert as_dict["model_name"] == "fake-embed"
+
+
+def test_sync_embed_and_embed_batch(embed_client, fake_provider):
+    single = embed_client.embed(
+        "fake-embed",
+        "hello",
+        g.EmbedOptions(dimensions=256),
+    )
+    assert single.vector == pytest.approx([0.1, 0.2, 0.3])
+    assert fake_provider.requests[0]["body"]["input"] == "hello"
+    assert fake_provider.requests[0]["body"]["dimensions"] == 256
+
+    batch = embed_client.embed_batch("fake-embed", ["a", "b"], {"dimensions": 128})
+    assert len(batch) == 2
+    assert batch.vectors == [
+        pytest.approx([0.1, 0.2, 0.3]),
+        pytest.approx([0.4, 0.5, 0.6]),
+    ]
+    assert fake_provider.requests[1]["body"]["input"] == ["a", "b"]
+    assert fake_provider.requests[1]["body"]["dimensions"] == 128
+
+
+def test_sync_embed_rejects_running_event_loop(embed_client):
+    async def run():
+        embed_client.embed("fake-embed", "hello")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        asyncio.run(run())
+    assert "running async runtime" in str(excinfo.value)
+
+    async def run_batch():
+        embed_client.embed_batch("fake-embed", ["a", "b"])
+
+    with pytest.raises(RuntimeError) as excinfo:
+        asyncio.run(run_batch())
+    assert "running async runtime" in str(excinfo.value)

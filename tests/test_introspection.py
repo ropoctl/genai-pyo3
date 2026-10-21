@@ -120,6 +120,26 @@ class TestListModels:
 
         assert asyncio.run(run()) == ["model-a", "model-b"]
 
+    def test_sync_form_returns_models_and_guards_running_event_loop(self, fake_provider):
+        client = (
+            g.Client.builder()
+            .provider(
+                "openai",
+                endpoint=fake_provider.base_url,
+                auth=g.AuthData.key("sk-test"),
+            )
+            .build()
+        )
+
+        assert client.all_model_names("openai") == ["model-a", "model-b"]
+
+        async def run():
+            return client.all_model_names("openai")
+
+        with pytest.raises(RuntimeError) as excinfo:
+            asyncio.run(run())
+        assert "running async runtime" in str(excinfo.value)
+
     def test_endpoint_and_auth_can_be_overridden_per_lookup(self, fake_provider):
         client = g.Client()
 

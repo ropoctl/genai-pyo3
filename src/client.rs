@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use crate::chat::{coerce_chat_options, coerce_chat_request};
 use crate::convert::build_header_map;
-use crate::embed::{coerce_embed_options, to_py_embed_response};
+use crate::embed::{PyEmbedResponse, coerce_embed_options, to_py_embed_response};
 use crate::errors::to_py_err;
 use crate::resolvers::{PyCallback, auth_resolver_fn, model_mapper_fn, service_target_resolver_fn};
 use crate::response::{
@@ -139,6 +139,20 @@ impl PyClient {
             .map_err(to_py_err)
     }
 
+    /// Blocking form of [`aall_model_names`](Self::aall_model_names).
+    #[pyo3(signature = (adapter_kind, *, endpoint = None, auth = None))]
+    fn all_model_names(
+        &self,
+        py: Python<'_>,
+        adapter_kind: AdapterKindLike,
+        endpoint: Option<EndpointLike>,
+        auth: Option<PyAuthData>,
+    ) -> PyResult<Vec<String>> {
+        let (kind, endpoint, auth) = self.resolve_provider_config(adapter_kind, endpoint, auth)?;
+        block_on_shared_runtime(py, self.inner.all_model_names(kind, (endpoint, auth)))?
+            .map_err(to_py_err)
+    }
+
     /// Ask a provider which models it is currently serving.
     ///
     /// Beats a hand-maintained table for local serving stacks and
@@ -153,19 +167,7 @@ impl PyClient {
         endpoint: Option<EndpointLike>,
         auth: Option<PyAuthData>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let kind = adapter_kind.resolve()?;
-        let configured = self.provider_overrides.get(&kind);
-        // Explicit arguments win; otherwise use whatever this client was
-        // configured with for that provider, so listing models goes to the
-        // same place chatting would.
-        let endpoint = match endpoint {
-            Some(endpoint) => Some(endpoint.resolve()?),
-            None => configured.and_then(|entry| entry.endpoint.clone()),
-        };
-        let auth = match auth {
-            Some(auth) => Some(auth.inner),
-            None => configured.and_then(|entry| entry.auth.clone()),
-        };
+        let (kind, endpoint, auth) = self.resolve_provider_config(adapter_kind, endpoint, auth)?;
         let client = self.inner.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -174,6 +176,25 @@ impl PyClient {
                 .await
                 .map_err(to_py_err)
         })
+    }
+
+    /// Blocking form of [`aembed`](Self::aembed).
+    #[pyo3(signature = (model, input, options = None))]
+    fn embed<'py>(
+        &self,
+        py: Python<'py>,
+        model: ModelLike,
+        input: String,
+        options: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<PyEmbedResponse> {
+        let embed_options = coerce_embed_options(options)?;
+        let response = block_on_shared_runtime(
+            py,
+            self.inner
+                .embed(model.into_spec(), input, embed_options.as_ref()),
+        )?
+        .map_err(to_py_err)?;
+        Ok(to_py_embed_response(response))
     }
 
     /// Embed a single string.
@@ -196,6 +217,25 @@ impl PyClient {
                 .map_err(to_py_err)?;
             Ok(to_py_embed_response(response))
         })
+    }
+
+    /// Blocking form of [`aembed_batch`](Self::aembed_batch).
+    #[pyo3(signature = (model, inputs, options = None))]
+    fn embed_batch<'py>(
+        &self,
+        py: Python<'py>,
+        model: ModelLike,
+        inputs: Vec<String>,
+        options: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<PyEmbedResponse> {
+        let embed_options = coerce_embed_options(options)?;
+        let response = block_on_shared_runtime(
+            py,
+            self.inner
+                .embed_batch(model.into_spec(), inputs, embed_options.as_ref()),
+        )?
+        .map_err(to_py_err)?;
+        Ok(to_py_embed_response(response))
     }
 
     /// Embed several strings in one request.
@@ -715,6 +755,12 @@ impl PyClientBuilder {
     }
 }
 
+fn has_running_python_event_loop(py: Python<'_>) -> bool {
+    py.import("asyncio")
+        .and_then(|asyncio| asyncio.call_method0("_get_running_loop"))
+        .is_ok_and(|loop_obj| !loop_obj.is_none())
+}
+
 /// Drive `fut` to completion on the runtime shared with the async entry
 /// points, with the GIL released for the duration.
 ///
@@ -724,18 +770,19 @@ impl PyClientBuilder {
 /// worker pool for every synchronous request.
 ///
 /// Calling a blocking entry point from inside a running runtime — a resolver
-/// callback that re-enters the client, say — would panic deep inside tokio,
-/// so it is rejected up front with an actionable message.
+/// callback that re-enters the client, or an `async def` coroutine on a
+/// running event loop — would either panic deep inside tokio or block the
+/// event loop, so it is rejected up front with an actionable message.
 fn block_on_shared_runtime<F>(py: Python<'_>, fut: F) -> PyResult<F::Output>
 where
     F: std::future::Future + Send,
     F::Output: Send,
 {
-    if tokio::runtime::Handle::try_current().is_ok() {
+    if tokio::runtime::Handle::try_current().is_ok() || has_running_python_event_loop(py) {
         return Err(PyRuntimeError::new_err(
-            "blocking Client.chat() called from inside a running async runtime \
-             (e.g. from a resolver callback). Use the async entry points \
-             (achat / astream_chat) instead.",
+            "blocking Client method called from inside a running async runtime or event loop \
+             (e.g. from an async def or resolver callback). Use the async entry points \
+             (achat / astream_chat / aembed / aembed_batch / aall_model_names / aresolve_service_target) instead.",
         ));
     }
     Ok(py.detach(|| pyo3_async_runtimes::tokio::get_runtime().block_on(fut)))
@@ -764,18 +811,46 @@ pub(crate) fn preserve_streamed_thought_signatures(
 
 /// Reassemble streamed signature deltas into the units a provider expects.
 ///
-/// The Anthropic streamer exposes signature deltas without block boundaries
-/// and omits terminal signatures. An Anthropic thinking response uses one
-/// signed thinking block, so the deltas concatenate into a single logical
-/// signature. Other adapters already emit whole units and pass through.
+/// The Anthropic and Bedrock streamers expose signature deltas without block
+/// boundaries when streaming thinking blocks. An uncaptured thinking response
+/// concatenates deltas into a single logical signature; other adapters
+/// already emit whole units and pass through.
 pub(crate) fn normalize_streamed_thought_signatures(
     adapter_kind: &AdapterKind,
     streamed_chunks: Vec<String>,
 ) -> Vec<String> {
-    if matches!(adapter_kind, AdapterKind::Anthropic) && !streamed_chunks.is_empty() {
+    if matches!(
+        adapter_kind,
+        AdapterKind::Anthropic | AdapterKind::BedrockApi | AdapterKind::BedrockSigv4
+    ) && !streamed_chunks.is_empty()
+    {
         vec![streamed_chunks.concat()]
     } else {
         streamed_chunks
+    }
+}
+
+impl PyClient {
+    fn resolve_provider_config(
+        &self,
+        adapter_kind: AdapterKindLike,
+        endpoint: Option<EndpointLike>,
+        auth: Option<PyAuthData>,
+    ) -> PyResult<(AdapterKind, Option<Endpoint>, Option<AuthData>)> {
+        let kind = adapter_kind.resolve()?;
+        let configured = self.provider_overrides.get(&kind);
+        // Explicit arguments win; otherwise use whatever this client was
+        // configured with for that provider, so listing models goes to the
+        // same place chatting would.
+        let endpoint = match endpoint {
+            Some(endpoint) => Some(endpoint.resolve()?),
+            None => configured.and_then(|entry| entry.endpoint.clone()),
+        };
+        let auth = match auth {
+            Some(auth) => Some(auth.inner),
+            None => configured.and_then(|entry| entry.auth.clone()),
+        };
+        Ok((kind, endpoint, auth))
     }
 }
 
@@ -851,12 +926,18 @@ mod tests {
 
     #[test]
     fn anthropic_streamed_signature_deltas_form_one_fallback_signature() {
-        let signatures = normalize_streamed_thought_signatures(
-            &AdapterKind::Anthropic,
-            vec!["signed-".to_string(), "fragmented".to_string()],
-        );
+        for kind in [
+            AdapterKind::Anthropic,
+            AdapterKind::BedrockApi,
+            AdapterKind::BedrockSigv4,
+        ] {
+            let signatures = normalize_streamed_thought_signatures(
+                &kind,
+                vec!["signed-".to_string(), "fragmented".to_string()],
+            );
 
-        assert_eq!(signatures, ["signed-fragmented"]);
+            assert_eq!(signatures, ["signed-fragmented"]);
+        }
     }
 
     #[test]
