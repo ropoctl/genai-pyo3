@@ -11,12 +11,45 @@ import ast
 from pathlib import Path
 
 import genai_pyo3 as g
+from genai_pyo3 import types
 
 STUB_PATH = Path(g.__file__).with_name("__init__.pyi")
+TYPES_PATH = Path(g.__file__).with_name("types.py")
 
 
 def stub_tree() -> ast.Module:
     return ast.parse(STUB_PATH.read_text())
+
+
+def types_tree() -> ast.Module:
+    return ast.parse(TYPES_PATH.read_text())
+
+
+def typed_dict_fields(tree: ast.Module) -> dict[str, list[str]]:
+    result: dict[str, list[str]] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        if not any(isinstance(b, ast.Name) and b.id == "TypedDict" for b in node.bases):
+            continue
+        fields = [
+            stmt.target.id
+            for stmt in node.body
+            if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name)
+        ]
+        result[node.name] = fields
+    return result
+
+
+def stub_class_new_params(class_name: str) -> list[str]:
+    for node in stub_tree().body:
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            for item in node.body:
+                if isinstance(item, ast.FunctionDef) and item.name == "__new__":
+                    pos = [arg.arg for arg in item.args.args[1:]]
+                    kw = [arg.arg for arg in item.args.kwonlyargs]
+                    return pos + kw
+    raise AssertionError(f"no {class_name}.__new__ in stub")
 
 
 def stub_all() -> list[str]:
@@ -69,8 +102,34 @@ def test_removed_constructors_are_really_gone():
 
 
 def test_public_types_are_importable_from_types_module():
-    from genai_pyo3 import types
-
     for name in types.__all__:
         assert hasattr(types, name)
         assert hasattr(g, name), f"{name} in types.__all__ but not re-exported"
+
+
+def test_typed_dicts_match_between_types_module_and_stub():
+    in_types = typed_dict_fields(types_tree())
+    in_stub = typed_dict_fields(stub_tree())
+    assert in_types == in_stub
+
+
+def test_options_typed_dicts_cover_constructor_parameters():
+    stub_dicts = typed_dict_fields(stub_tree())
+    assert set(stub_dicts["ChatOptionsDict"]) == set(stub_class_new_params("ChatOptions"))
+    assert set(stub_dicts["EmbedOptionsDict"]) == set(stub_class_new_params("EmbedOptions"))
+
+
+def test_no_duplicate_method_declarations_in_stub_classes():
+    for node in stub_tree().body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        seen: set[str] = set()
+        for item in node.body:
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                is_setter = any(
+                    isinstance(d, ast.Attribute) and d.attr == "setter"
+                    for d in item.decorator_list
+                )
+                key = f"{item.name}:setter" if is_setter else item.name
+                assert key not in seen, f"duplicate {item.name} in stub class {node.name}"
+                seen.add(key)

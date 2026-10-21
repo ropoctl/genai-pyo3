@@ -98,6 +98,8 @@ class ChatOptionsDict(TypedDict, total=False):
     max_tokens: int | None
     top_p: float | None
     stop_sequences: list[str] | None
+    stream_header_timeout: float | None
+    stream_read_timeout: float | None
     capture_usage: bool | None
     capture_content: bool | None
     capture_reasoning_content: bool | None
@@ -336,7 +338,6 @@ class ChatMessage:
     def to_dict(self) -> dict[str, Any]: ...
     @staticmethod
     def from_python(obj: Any) -> ChatMessage: ...
-    def to_dict(self) -> dict[str, Any]: ...
 
 class Tool:
     name: str
@@ -773,8 +774,14 @@ class Client:
         request: ChatRequestLike,
         options: ChatOptionsLike | None = ...,
     ) -> ChatResponse: ...
+    def embed(
+        self, model: ModelLike, input: str, options: EmbedOptionsLike | None = ...
+    ) -> EmbedResponse: ...
     async def aembed(
         self, model: ModelLike, input: str, options: EmbedOptionsLike | None = ...
+    ) -> EmbedResponse: ...
+    def embed_batch(
+        self, model: ModelLike, inputs: list[str], options: EmbedOptionsLike | None = ...
     ) -> EmbedResponse: ...
     async def aembed_batch(
         self, model: ModelLike, inputs: list[str], options: EmbedOptionsLike | None = ...
@@ -785,6 +792,15 @@ class Client:
 
     async def aresolve_service_target(self, model: ModelLike) -> ServiceTarget: ...
     def default_model(self, model_name: str) -> ModelIden: ...
+    def all_model_names(
+        self,
+        adapter_kind: AdapterKind | str,
+        *,
+        endpoint: Endpoint | str | None = ...,
+        auth: AuthData | None = ...,
+    ) -> list[str]:
+        """Ask a provider which models it is currently serving."""
+
     async def aall_model_names(
         self,
         adapter_kind: AdapterKind | str,

@@ -114,6 +114,8 @@ class ChatOptionsDict(TypedDict, total=False):
     max_tokens: int | None
     top_p: float | None
     stop_sequences: list[str] | None
+    stream_header_timeout: float | None
+    stream_read_timeout: float | None
     capture_usage: bool | None
     capture_content: bool | None
     capture_reasoning_content: bool | None
