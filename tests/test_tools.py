@@ -29,6 +29,13 @@ class TestToolDefinition:
         with pytest.raises(ValueError):
             g.Tool("f", cache_control="forever")
 
+    def test_cache_control_is_validated_on_setter(self):
+        tool = g.Tool("f")
+        tool.cache_control = "ephemeral_5m"
+        assert tool.cache_control == "ephemeral_5m"
+        with pytest.raises(ValueError):
+            tool.cache_control = "forever"
+
     def test_custom_config_round_trips(self):
         tool = g.Tool("f", config={"vendor_flag": 1})
         assert tool.config == {"vendor_flag": 1}
@@ -160,6 +167,56 @@ class TestMixedContent:
         with pytest.raises(ValueError) as excinfo:
             g.ChatMessage("user", content_parts=["ok", object()])
         assert "content_parts[1]" in str(excinfo.value)
+
+    def test_from_python_preserves_content_parts_and_binary(self, client, fake_provider):
+        binary = g.Binary.from_base64("image/png", "aGVsbG8=")
+        from_parts = g.ChatMessage.from_python(
+            {"role": "user", "content_parts": ["describe this", binary]}
+        )
+        assert from_parts.content_parts == [
+            {"text": "describe this"},
+            binary.to_dict(),
+        ]
+
+        # Round-trip through to_dict() -> from_python()
+        round_tripped = g.ChatMessage.from_python(from_parts.to_dict())
+        assert round_tripped.content_parts == from_parts.content_parts
+
+        # Multimodal list under `content` (Binary or ContentPartDict items)
+        from_content_list = g.ChatMessage.from_python(
+            {"role": "user", "content": ["describe this", binary]}
+        )
+        assert from_content_list.content_parts == [
+            {"text": "describe this"},
+            binary.to_dict(),
+        ]
+
+        client.chat("fake-model", g.ChatRequest(messages=[from_content_list]))
+        wire_content = fake_provider.requests[0]["body"]["messages"][0]["content"]
+        assert wire_content[0] == {"type": "text", "text": "describe this"}
+        assert wire_content[1]["type"] == "image_url"
+
+        # OpenAI-style text blocks still flatten to plain text without content_parts
+        openai_text = g.ChatMessage.from_python(
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "first"},
+                    {"type": "text", "text": "second"},
+                ],
+            }
+        )
+        assert openai_text.content == "first\nsecond"
+        assert openai_text.content_parts is None
+
+    def test_message_role_and_cache_control_validate_on_setter(self):
+        msg = g.ChatMessage("user", "hi")
+        with pytest.raises(ValueError):
+            msg.role = "not-a-role"
+        with pytest.raises(ValueError):
+            msg.cache_control = "forever"
+        with pytest.raises(ValueError):
+            g.ChatMessage("user", "hi", cache_control="forever")
 
 
 def test_binary_exposes_every_media_predicate():

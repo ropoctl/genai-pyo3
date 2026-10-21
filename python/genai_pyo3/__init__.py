@@ -40,15 +40,79 @@ from ._genai_pyo3 import (
     UnsupportedError,
     Usage,
 )
+from .types import (
+    BinaryPartDict,
+    ChatMessageDict,
+    ChatOptionsDict,
+    ChatOptionsLike,
+    ChatRequestDict,
+    ChatRequestLike,
+    ContentPartDict,
+    CustomPartDict,
+    EmbedOptionsDict,
+    EmbedOptionsLike,
+    JsonSpecDict,
+    ModelLike,
+    ReasoningContentPartDict,
+    Role,
+    StopReason,
+    StreamEventKind,
+    TextPartDict,
+    ThoughtSignaturePartDict,
+    ToolCallPartDict,
+    ToolDict,
+    ToolResponsePartDict,
+)
 
 
 _MISSING = object()
+_CONTENT_PART_KEYS = {
+    "text",
+    "binary",
+    "tool_call",
+    "tool_response",
+    "thought_signature",
+    "reasoning_content",
+    "custom",
+}
 
 
 def _mapping_or_attr(obj, key, default=_MISSING):
     if isinstance(obj, Mapping) and key in obj:
         return obj[key]
     return getattr(obj, key, default)
+
+
+def _is_content_part_mapping(item):
+    if not isinstance(item, Mapping) or len(item) != 1:
+        return False
+    key = next(iter(item))
+    return key in _CONTENT_PART_KEYS
+
+
+def _has_structured_content_parts(items):
+    for item in items:
+        if isinstance(item, Binary) or _is_content_part_mapping(item):
+            return True
+    return False
+
+
+def _coerce_item_to_content_part(item):
+    if isinstance(item, (str, Binary)):
+        return item
+    if isinstance(item, Mapping):
+        if _is_content_part_mapping(item):
+            return dict(item)
+        item_type = item.get("type")
+        if item_type in {"text", "text-plain", "input_text", "output_text"}:
+            text = item.get("text")
+            if isinstance(text, str):
+                return {"text": text}
+        elif item_type == "reasoning":
+            reasoning = item.get("reasoning")
+            if isinstance(reasoning, str):
+                return {"reasoning_content": reasoning}
+    return item
 
 
 def _content_to_text(content):
@@ -71,6 +135,14 @@ def _content_to_text(content):
                     parts.append(text)
             elif item_type == "reasoning":
                 reasoning = item.get("reasoning")
+                if isinstance(reasoning, str) and reasoning:
+                    parts.append(reasoning)
+            elif item_type is None and "text" in item:
+                text = item.get("text")
+                if isinstance(text, str) and text:
+                    parts.append(text)
+            elif item_type is None and "reasoning_content" in item:
+                reasoning = item.get("reasoning_content")
                 if isinstance(reasoning, str) and reasoning:
                     parts.append(reasoning)
         return "\n".join(part for part in parts if part)
@@ -125,11 +197,22 @@ def _chat_message_from_python(obj):
     else:
         role = str(role)
 
-    content = _content_to_text(_mapping_or_attr(obj, "content", ""))
+    raw_content_field = _mapping_or_attr(obj, "content", _MISSING)
+    content_parts = _mapping_or_attr(obj, "content_parts", None)
+    if content_parts is None and isinstance(raw_content_field, list):
+        if _has_structured_content_parts(raw_content_field):
+            content_parts = [
+                _coerce_item_to_content_part(item) for item in raw_content_field
+            ]
     cache_control = _mapping_or_attr(obj, "cache_control", None)
     thought_signatures = _mapping_or_attr(obj, "thought_signatures", None)
     reasoning_content = _mapping_or_attr(obj, "reasoning_content", None)
     raw_content = _mapping_or_attr(obj, "raw_content", None)
+    if raw_content_field is _MISSING:
+        content = None if (content_parts is not None or raw_content is not None) else ""
+    else:
+        content = _content_to_text(raw_content_field)
+
     if role == "tool":
         tool_response_call_id = _mapping_or_attr(obj, "tool_response_call_id", _MISSING)
         if tool_response_call_id is _MISSING:
@@ -138,6 +221,9 @@ def _chat_message_from_python(obj):
             "tool",
             content,
             tool_response_call_id=tool_response_call_id,
+            cache_control=cache_control,
+            raw_content=raw_content,
+            content_parts=content_parts,
         )
 
     tool_calls = _mapping_or_attr(obj, "tool_calls", None)
@@ -149,6 +235,7 @@ def _chat_message_from_python(obj):
             cache_control=cache_control,
             thought_signatures=thought_signatures,
             raw_content=raw_content,
+            content_parts=content_parts,
             reasoning_content=reasoning_content,
         )
     return ChatMessage(
@@ -157,39 +244,13 @@ def _chat_message_from_python(obj):
         cache_control=cache_control,
         thought_signatures=thought_signatures,
         raw_content=raw_content,
+        content_parts=content_parts,
         reasoning_content=reasoning_content,
     )
 
 
 ToolCall.from_python = staticmethod(_tool_call_from_python)
 ChatMessage.from_python = staticmethod(_chat_message_from_python)
-
-
-# Re-export the TypedDict shapes from .types so users can annotate without a
-# separate import (`from genai_pyo3 import ChatRequestDict`).
-from .types import (
-    BinaryPartDict,
-    ChatMessageDict,
-    ChatOptionsDict,
-    ChatOptionsLike,
-    ChatRequestDict,
-    ChatRequestLike,
-    ContentPartDict,
-    CustomPartDict,
-    ReasoningContentPartDict,
-    EmbedOptionsDict,
-    EmbedOptionsLike,
-    JsonSpecDict,
-    ModelLike,
-    Role,
-    StopReason,
-    StreamEventKind,
-    TextPartDict,
-    ThoughtSignaturePartDict,
-    ToolCallPartDict,
-    ToolDict,
-    ToolResponsePartDict,
-)
 
 __all__ = [
     "AdapterKind",
