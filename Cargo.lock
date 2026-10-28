@@ -979,8 +979,8 @@ dependencies = [
 
 [[package]]
 name = "genai"
-version = "0.7.1"
-source = "git+https://github.com/jeremychone/rust-genai?tag=v0.7.1#2d9aa9d15a1cfebe6f032045230497a5fc9d4aed"
+version = "0.7.2"
+source = "git+https://github.com/jeremychone/rust-genai?tag=v0.7.2#27bc123c56b847957bff07cdee0a004ecff97939"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -1007,7 +1007,7 @@ dependencies = [
 
 [[package]]
 name = "genai-pyo3"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "futures",
  "genai",
