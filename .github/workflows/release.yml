@@ -23,7 +23,8 @@ permissions:
 jobs:
   # --- Linux x86_64 (manylinux2014) -------------------------------------------
   linux:
-    runs-on: ubuntu-latest
+    # Ubuntu 26.04 does not provide Python 3.9 through setup-python.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -98,7 +99,7 @@ jobs:
   # needs cmake at build time and the musl images don't all ship it, so the
   # before-script installs it with whichever package manager the image has.
   linux-musl:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
