@@ -916,9 +916,9 @@ impl TryFrom<PyChatMessage> for ChatMessage {
                         }
                     })
                     .collect();
-                if !thought_signatures
+                if thought_signatures
                     .as_ref()
-                    .is_some_and(|signatures| !signatures.is_empty())
+                    .is_none_or(|signatures| signatures.is_empty())
                 {
                     thought_signatures = calls
                         .iter()
@@ -944,22 +944,26 @@ impl TryFrom<PyChatMessage> for ChatMessage {
             }
         };
 
-        // Attach canonical reasoning signatures before text / tool calls.
-        // Adapters reconstruct their provider-native continuation blocks from
-        // these parts; ToolCall signatures remain a convenience mirror.
-        if !has_normalized_content {
-            if let Some(sigs) = thought_signatures
-                && !sigs.is_empty()
-            {
-                let parts = chat_message.content.parts().clone();
-                let mut new_parts: Vec<genai::chat::ContentPart> = sigs
-                    .into_iter()
-                    .map(genai::chat::ContentPart::ThoughtSignature)
-                    .collect();
-                new_parts.extend(parts);
-                chat_message.content = MessageContent::from_parts(new_parts);
-            }
+        // Attach canonical reasoning signatures and reasoning content when
+        // `chat_message.content` does not already carry them (e.g. unsigned
+        // streamed tool turns where `StreamEnd::captured_content` only holds
+        // `ToolCall` parts and `captured_reasoning_content` lives in its own
+        // field). When `normalized_content` already carries signed thinking
+        // blocks, keep its multi-block pairings untouched.
+        if chat_message.content.thought_signatures().is_empty()
+            && let Some(sigs) = thought_signatures
+            && !sigs.is_empty()
+        {
+            let parts = chat_message.content.parts().clone();
+            let mut new_parts: Vec<genai::chat::ContentPart> = sigs
+                .into_iter()
+                .map(genai::chat::ContentPart::ThoughtSignature)
+                .collect();
+            new_parts.extend(parts);
+            chat_message.content = MessageContent::from_parts(new_parts);
+        }
 
+        if !chat_message.content.contains_reasoning_content() {
             chat_message = chat_message.with_reasoning_content(reasoning_content);
         }
 
@@ -1223,13 +1227,13 @@ pub(crate) fn coerce_chat_options(obj: Option<Bound<'_, PyAny>>) -> PyResult<Opt
     // Python dict values before that conversion can hide invalid input.
     if let Ok(dict) = obj.cast::<PyDict>() {
         for name in ["stream_header_timeout", "stream_read_timeout"] {
-            if let Some(raw) = dict.get_item(name)? {
-                if !raw.is_none() {
-                    let seconds: f64 = raw.extract().map_err(|_| {
-                        PyValueError::new_err(format!("{name} must be a number of seconds"))
-                    })?;
-                    validate_timeout(name, Some(seconds))?;
-                }
+            if let Some(raw) = dict.get_item(name)?
+                && !raw.is_none()
+            {
+                let seconds: f64 = raw.extract().map_err(|_| {
+                    PyValueError::new_err(format!("{name} must be a number of seconds"))
+                })?;
+                validate_timeout(name, Some(seconds))?;
             }
         }
     }
@@ -1244,14 +1248,14 @@ pub(crate) fn coerce_chat_options(obj: Option<Bound<'_, PyAny>>) -> PyResult<Opt
             .iter()
             .enumerate()
         {
-            if let Some(raw) = map.remove(*name) {
-                if !raw.is_null() {
-                    let seconds = raw.as_f64().ok_or_else(|| {
-                        PyValueError::new_err(format!("{name} must be a number of seconds"))
-                    })?;
-                    validate_timeout(name, Some(seconds))?;
-                    stream_timeouts[index] = Some(Duration::from_secs_f64(seconds));
-                }
+            if let Some(raw) = map.remove(*name)
+                && !raw.is_null()
+            {
+                let seconds = raw.as_f64().ok_or_else(|| {
+                    PyValueError::new_err(format!("{name} must be a number of seconds"))
+                })?;
+                validate_timeout(name, Some(seconds))?;
+                stream_timeouts[index] = Some(Duration::from_secs_f64(seconds));
             }
         }
     }
@@ -1265,12 +1269,12 @@ pub(crate) fn coerce_chat_options(obj: Option<Bound<'_, PyAny>>) -> PyResult<Opt
 }
 
 fn validate_timeout(name: &str, seconds: Option<f64>) -> PyResult<()> {
-    if let Some(seconds) = seconds {
-        if !seconds.is_finite() || seconds <= 0.0 || seconds > Duration::MAX.as_secs_f64() {
-            return Err(PyValueError::new_err(format!(
-                "{name} must be a finite, positive number of seconds"
-            )));
-        }
+    if let Some(seconds) = seconds
+        && (!seconds.is_finite() || seconds <= 0.0 || seconds > Duration::MAX.as_secs_f64())
+    {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be a finite, positive number of seconds"
+        )));
     }
     Ok(())
 }

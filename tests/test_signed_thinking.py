@@ -275,6 +275,80 @@ class GenaiErrorTests(unittest.TestCase):
         )
         self.assertEqual(assistant_content[2]["type"], "tool_use")
 
+    def test_unsigned_streamed_reasoning_round_trips_via_tool_use_handoff(self):
+        class UnsignedStreamHandler(_ResponseHandler):
+            status = 200
+            content_type = "text/event-stream"
+            requests = []
+            body = b"".join(
+                [
+                    b'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"deepseek-v4.1-flash-1017-sakura","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Thinking about calling lookup."},"finish_reason":null}]}\n\n',
+                    b'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"deepseek-v4.1-flash-1017-sakura","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"toolu_msg_1","type":"function","function":{"name":"lookup","arguments":"{\\"query\\":\\"status\\"}"}}]},"finish_reason":null}]}\n\n',
+                    b'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"deepseek-v4.1-flash-1017-sakura","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":6,"total_tokens":10}}\n\n',
+                    b"data: [DONE]\n\n",
+                ]
+            )
+
+        def openai_client(base_url):
+            return (
+                Client.builder()
+                .adapter_kind("openai")
+                .provider("openai", endpoint=base_url, auth=AuthData.key("test-key"))
+                .build()
+            )
+
+        async def collect_response(base_url):
+            return await openai_client(base_url).achat_via_stream(
+                "deepseek-v4.1-flash-1017-sakura",
+                _request(),
+                ChatOptions(capture_reasoning_content=True),
+            )
+
+        with _LocalResponseServer(UnsignedStreamHandler) as base_url:
+            response = asyncio.run(collect_response(base_url))
+
+        self.assertEqual(response.thought_signatures, [])
+        self.assertEqual(
+            response.reasoning_content, "Thinking about calling lookup."
+        )
+
+        assistant = response.to_assistant_message_for_tool_use()
+        self.assertIsNotNone(assistant)
+        self.assertEqual(
+            assistant.reasoning_content, "Thinking about calling lookup."
+        )
+
+        class ContinuationHandler(_ResponseHandler):
+            status = 200
+            content_type = "application/json"
+            requests = []
+            body = b'{"id":"chatcmpl-2","object":"chat.completion","created":2,"model":"deepseek-v4.1-flash-1017-sakura","choices":[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}}'
+
+        continuation = ChatRequest(
+            messages=[
+                ChatMessage("user", "hello"),
+                assistant,
+                ChatMessage("tool", "available", tool_response_call_id="toolu_msg_1"),
+            ]
+        )
+
+        async def send_continuation(base_url):
+            return await openai_client(base_url).achat(
+                "deepseek-v4.1-flash-1017-sakura", continuation
+            )
+
+        with _LocalResponseServer(ContinuationHandler) as base_url:
+            asyncio.run(send_continuation(base_url))
+
+        request_body = json.loads(ContinuationHandler.requests[0])
+        assistant_msg = request_body["messages"][1]
+        self.assertEqual(assistant_msg["role"], "assistant")
+        self.assertEqual(
+            assistant_msg["reasoning_content"],
+            "Thinking about calling lookup.",
+        )
+        self.assertEqual(assistant_msg["tool_calls"][0]["id"], "toolu_msg_1")
+
 
 if __name__ == "__main__":
     unittest.main()

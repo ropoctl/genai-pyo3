@@ -975,4 +975,48 @@ mod tests {
             assert_eq!(message.content.tool_calls().len(), 1);
         });
     }
+
+    #[test]
+    fn response_tool_handoff_preserves_unsigned_streamed_reasoning_content() {
+        let response = PyChatResponse {
+            inner_content: MessageContent::from_parts(vec![ContentPart::ToolCall(ToolCall {
+                call_id: "toolu_msg_1".to_string(),
+                fn_name: "lookup".to_string(),
+                fn_arguments: json!({"query": "status"}),
+                thought_signatures: None,
+            })]),
+            reasoning_content: Some("streamed plaintext reasoning".to_string()),
+            model_adapter_kind: "openai".to_string(),
+            model_name: "deepseek-v4.1-flash-1017-sakura".to_string(),
+            provider_model_adapter_kind: "openai".to_string(),
+            provider_model_name: "deepseek-v4.1-flash-1017-sakura".to_string(),
+            usage: PyUsage {
+                prompt_tokens: None,
+                completion_tokens: None,
+                total_tokens: None,
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
+            },
+            response_id: None,
+            stop_reason: Some("tool_call".to_string()),
+            stop_reason_raw: Some("tool_calls".to_string()),
+            captured_raw_body: None,
+        };
+
+        Python::attach(|py| {
+            let message = response
+                .to_assistant_message_for_tool_use(py)
+                .expect("build Python handoff")
+                .expect("tool-use handoff");
+            let message = message.borrow(py).clone();
+            let message = ChatMessage::try_from(message).expect("convert canonical handoff");
+
+            assert!(message.content.thought_signatures().is_empty());
+            assert_eq!(
+                message.content.reasoning_contents(),
+                ["streamed plaintext reasoning"]
+            );
+            assert_eq!(message.content.tool_calls().len(), 1);
+        });
+    }
 }
