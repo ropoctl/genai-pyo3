@@ -979,8 +979,8 @@ dependencies = [
 
 [[package]]
 name = "genai"
-version = "0.7.3"
-source = "git+https://github.com/jeremychone/rust-genai?tag=v0.7.3#b44951653cda95fc80a53e9d68c7eb3a6d43e502"
+version = "0.7.4"
+source = "git+https://github.com/jeremychone/rust-genai?rev=d4e9c1d99d89893c13c289214e3e866c8a676a82#d4e9c1d99d89893c13c289214e3e866c8a676a82"
 dependencies = [
  "aws-config",
  "aws-credential-types",

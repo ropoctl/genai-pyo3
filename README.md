@@ -2,11 +2,11 @@
 
 Typed Python bindings for the Rust [`genai`](https://github.com/jeremychone/rust-genai) crate, built with `pyo3` and `maturin`.
 
-This release uses upstream `genai` v0.7.3. The Bedrock SigV4 feature is enabled
+This release uses upstream `genai` `main` (`d4e9c1d99d89893c13c289214e3e866c8a676a82`, post-v0.7.3). The Bedrock SigV4 feature is enabled
 in the extension:
 
 ```toml
-genai = { git = "https://github.com/jeremychone/rust-genai", tag = "v0.7.3", features = ["bedrock-sigv4"] }
+genai = { git = "https://github.com/jeremychone/rust-genai", rev = "d4e9c1d99d89893c13c289214e3e866c8a676a82", features = ["bedrock-sigv4"] }
 ```
 
 ## What It Exposes
