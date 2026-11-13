@@ -2,11 +2,11 @@
 
 Typed Python bindings for the Rust [`genai`](https://github.com/jeremychone/rust-genai) crate, built with `pyo3` and `maturin`.
 
-This release uses upstream `genai` `main` (`d4e9c1d99d89893c13c289214e3e866c8a676a82`, post-v0.7.3). The Bedrock SigV4 feature is enabled
+This release uses upstream `genai` v0.7.4. The Bedrock SigV4 feature is enabled
 in the extension:
 
 ```toml
-genai = { git = "https://github.com/jeremychone/rust-genai", rev = "d4e9c1d99d89893c13c289214e3e866c8a676a82", features = ["bedrock-sigv4"] }
+genai = { git = "https://github.com/jeremychone/rust-genai", tag = "v0.7.4", features = ["bedrock-sigv4"] }
 ```
 
 ## What It Exposes
@@ -40,7 +40,7 @@ Entry points:
 
 ### Vertex and Bedrock
 
-Provider namespaces route through the native 0.7.3 adapters:
+Provider namespaces route through the native 0.7.4 adapters:
 
 ```python
 from genai_pyo3 import AuthData, ChatMessage, ChatRequest, Client
@@ -65,7 +65,7 @@ await sigv4.achat("bedrock_sigv4::us.anthropic.claude-sonnet-4-5-20250929-v1:0",
 For Vertex, refresh the OAuth token before expiry through an auth resolver;
 `AuthData.from_env` reads an already available token. `ChatOptions` also accepts
 `stream_header_timeout` and `stream_read_timeout` in seconds for long-running
-streams. `AdapterKind.all()` includes the 0.7.3 provider names, including
+streams. `AdapterKind.all()` includes the 0.7.4 provider names, including
 Mistral, Requesty, API Route, and Gemini Interactions.
 
 ## Install
